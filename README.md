@@ -85,3 +85,4 @@ The frontend is configured with a proxy to the backend:
 ## License
 
 This project is for internal or personal use as defined by the repository owner.
+
