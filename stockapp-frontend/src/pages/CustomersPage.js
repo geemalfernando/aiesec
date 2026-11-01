@@ -1,15 +1,16 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Plus, Search, Users } from 'lucide-react';
-import { addCustomer, deleteCustomer, fetchCustomers, updateCustomer } from '../api/customers';
-import { fetchDueBills, fetchOverdueBills } from '../api/sales';
-import { Alert, Badge, Button, Card, EmptyState, Input, Modal, PageHeader, PageLoading, Table, Td, Th, useToast } from '../components/ui';
+import { Link } from 'react-router-dom';
+import { addCustomer, deleteCustomer, updateCustomer } from '../api/customers';
+import { fetchCustomerSummaries } from '../api/reports';
+import { RankBars } from '../components/charts';
+import { Alert, Badge, Button, Card, EmptyState, Input, Modal, PageHeader, PageLoading, Stat, Table, Td, Th, useToast } from '../components/ui';
 import CustomerForm from '../components/sales/CustomerForm';
-import { apiError, money } from '../utils/format';
+import { apiError, formatDay, money } from '../utils/format';
 
 const CustomersPage = () => {
   const toast = useToast();
   const [customers, setCustomers] = useState(null);
-  const [owed, setOwed] = useState({});
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
   const [editing, setEditing] = useState(null); // {} adds a new customer
@@ -18,11 +19,7 @@ const CustomersPage = () => {
 
   const load = useCallback(async () => {
     try {
-      const [list, due, overdue] = await Promise.all([fetchCustomers(), fetchDueBills(), fetchOverdueBills()]);
-      setCustomers([...list].sort((a, b) => a.name.localeCompare(b.name)));
-      const totals = {};
-      [...due, ...overdue].forEach((bill) => { totals[bill.customerId] = (totals[bill.customerId] || 0) + (bill.balanceDue || 0); });
-      setOwed(totals);
+      setCustomers(await fetchCustomerSummaries());
     } catch (err) {
       setError(apiError(err, 'Could not load customers.'));
     }
@@ -59,7 +56,18 @@ const CustomersPage = () => {
   return (
     <>
       <PageHeader title="Customers" subtitle={`${customers.length} in total`} action={addButton} />
-      {unset > 0 && <Alert tone="warning" className="mb-4">{unset} customer{unset === 1 ? ' has' : 's have'} no type set. They can still buy on credit until you choose Cash or Credit.</Alert>}
+      <div className="mb-6 grid gap-3 lg:grid-cols-3">
+        <div className="grid gap-3 sm:grid-cols-2 lg:col-span-2">
+          <Stat label="Total sales" value={money(customers.reduce((sum, c) => sum + c.totalSales, 0))} />
+          <Stat label="Customers owe" value={money(customers.reduce((sum, c) => sum + c.owed, 0))} note={`${customers.filter((c) => c.owed > 0).length} with open bills`} />
+          <Stat label="Bought something" value={customers.filter((c) => c.bills > 0).length} note={`of ${customers.length} customers`} />
+          <Stat label="No bills yet" value={customers.filter((c) => c.bills === 0).length} />
+        </div>
+        <Card title="Top customers">
+          {customers.some((c) => c.totalSales > 0) ? <RankBars rows={[...customers].filter((c) => c.totalSales > 0).sort((a, b) => b.totalSales - a.totalSales).slice(0, 5).map((c) => ({ key: c._id, label: c.name, value: c.totalSales }))} format={money} /> : <p className="text-sm text-slate-500">No sales yet.</p>}
+        </Card>
+      </div>
+      {unset > 0 && <Alert tone="warning" className="mb-4">{unset} customer{unset === 1 ? ' has' : 's have'} no type set. Edit them to choose how they usually pay.</Alert>}
       <div className="relative mb-3 sm:max-w-xs">
         <Search className="absolute left-3 top-3 h-4 w-4 text-slate-400" aria-hidden="true" />
         <Input className="pl-9" placeholder="Search name or phone" aria-label="Search customers" value={search} onChange={(e) => setSearch(e.target.value)} />
@@ -69,15 +77,15 @@ const CustomersPage = () => {
           <EmptyState icon={Users} title={customers.length ? 'No customers match' : 'No customers yet'} />
         ) : (
           <Table>
-            <thead><tr><Th>Name</Th><Th>Phone</Th><Th>Type</Th><Th>Credit days</Th><Th align="right">Owes</Th><Th align="right"><span className="sr-only">Actions</span></Th></tr></thead>
+            <thead><tr><Th>Name</Th><Th>Usually pays</Th><Th>Last bill</Th><Th align="right">Total bought</Th><Th align="right">Owes</Th><Th align="right"><span className="sr-only">Actions</span></Th></tr></thead>
             <tbody>
               {shown.map((customer) => (
                 <tr key={customer._id} className="hover:bg-slate-50">
-                  <Td className="font-medium">{customer.name}</Td>
-                  <Td className="text-slate-600">{customer.phone || '-'}</Td>
+                  <Td><Link to={`/customers/${customer._id}`} className="font-medium text-brand-700 hover:underline">{customer.name}</Link>{customer.phone && <div className="text-xs text-slate-500">{customer.phone}</div>}</Td>
                   <Td>{customer.customerType ? <Badge tone={customer.customerType === 'credit' ? 'info' : 'neutral'}>{customer.customerType === 'credit' ? 'Credit' : 'Cash'}</Badge> : <Badge tone="warning">Not set</Badge>}</Td>
-                  <Td className="tabular text-slate-600">{customer.customerType === 'cash' ? '-' : customer.creditDays}</Td>
-                  <Td align="right" className="font-medium">{owed[customer._id] ? money(owed[customer._id]) : '-'}</Td>
+                  <Td className="whitespace-nowrap text-slate-600">{customer.lastSale ? formatDay(customer.lastSale) : '-'}</Td>
+                  <Td align="right" className="whitespace-nowrap">{money(customer.totalSales)}</Td>
+                  <Td align="right" className={`whitespace-nowrap font-medium ${customer.owed > 0 ? 'text-red-700' : ''}`}>{customer.owed > 0 ? money(customer.owed) : '-'}</Td>
                   <Td align="right" className="whitespace-nowrap">
                     <Button size="sm" variant="ghost" onClick={() => setEditing(customer)}>Edit</Button>
                     <Button size="sm" variant="ghost" onClick={() => { setDeleteError(''); setDeleting(customer); }}>Delete</Button>

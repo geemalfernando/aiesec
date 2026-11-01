@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { Camera, Plus, ShoppingCart, Trash2 } from 'lucide-react';
+import { Camera, PackagePlus, Plus, ShoppingCart, Trash2 } from 'lucide-react';
 import { addCustomer, fetchCustomers } from '../api/customers';
-import { fetchInventoryItems, fetchLocations } from '../api/inventory';
+import { fetchInventoryItems } from '../api/inventory';
 import { recordSale } from '../api/sales';
 import { Alert, Badge, Button, buttonClass, Card, EmptyState, Field, Input, Modal, PageHeader, PageLoading, Select, Table, Td, Th, useToast } from '../components/ui';
 import ChequeFields, { EMPTY_CHEQUE, chequeComplete } from '../components/sales/ChequeFields';
@@ -32,14 +32,15 @@ const SalesEntryPage = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const pendingBill = useRef(location.state?.billFile || null);
+  const billFileRef = useRef(null);
+  // Set when this sale comes from a photo sent by an agency.
+  const [photo, setPhoto] = useState(location.state?.photo || null);
 
   const [customers, setCustomers] = useState([]);
   const [stock, setStock] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
 
-  const [locations, setLocations] = useState([]);
-  const [newItemLocation, setNewItemLocation] = useState('');
   const [customerId, setCustomerId] = useState('');
   const [billNumber, setBillNumber] = useState('');
   const [billDate, setBillDate] = useState('');
@@ -61,13 +62,10 @@ const SalesEntryPage = () => {
   const [billText, setBillText] = useState('');
 
   const selectedCustomer = customers.find((c) => c._id === customerId);
-  const creditAllowed = selectedCustomer?.customerType !== 'cash';
 
   const loadData = useCallback(async () => {
     try {
-      const [customerList, items, locationList] = await Promise.all([fetchCustomers(), fetchInventoryItems(), fetchLocations()]);
-      setLocations(locationList);
-      setNewItemLocation((current) => current || locationList[0] || '');
+      const [customerList, items] = await Promise.all([fetchCustomers(), fetchInventoryItems()]);
       setCustomers([...customerList].sort((a, b) => a.name.localeCompare(b.name)));
       setStock(items);
     } catch (err) {
@@ -79,17 +77,13 @@ const SalesEntryPage = () => {
 
   useEffect(() => { loadData(); }, [loadData]);
 
-  // A cash customer cannot buy on credit; a credit bill defaults to the customer's credit days.
+  // A credit bill defaults to the customer's credit days from the bill date.
   useEffect(() => {
     if (paymentMethod !== 'credit') return;
-    if (!creditAllowed) {
-      setPaymentMethod('cash');
-      return;
-    }
     const due = billDate ? new Date(`${billDate}T00:00:00`) : new Date();
     due.setDate(due.getDate() + (selectedCustomer?.creditDays ?? 21));
     setDueDate(due.toLocaleDateString('en-CA'));
-  }, [paymentMethod, creditAllowed, selectedCustomer, billDate]);
+  }, [paymentMethod, selectedCustomer, billDate]);
 
   // Stock is held per location; the picker shows each item once, then its locations.
   const itemNames = useMemo(() => [...new Set(stock.map((s) => s.name))].sort((a, b) => a.localeCompare(b)), [stock]);
@@ -130,7 +124,7 @@ const SalesEntryPage = () => {
     const item = saleItems[index];
     const quantity = (field === 'cases' ? entered : item.cases) * item.piecesPerCase + (field === 'pieces' ? entered : item.pieces);
     const available = stock.find((s) => s._id === item.itemId);
-    if (!item.topUp && available && quantity + inCart(item.itemId, index) > available.quantity) {
+    if (available && quantity + inCart(item.itemId, index) > available.quantity) {
       setError(`Only ${stockText(available.cases, available.pieces)} of ${item.name} at ${locationName(item.locationTakenFrom)}.`);
       return;
     }
@@ -143,11 +137,9 @@ const SalesEntryPage = () => {
     } : row)));
   };
 
-  const updateRow = (index, changes) => setSaleItems(saleItems.map((row, i) => (i === index ? { ...row, ...changes } : row)));
-
   const shortBy = (item) => {
     const available = stock.find((s) => s._id === item.itemId);
-    if (!item.topUp || !available) return 0;
+    if (!available) return 0;
     return Math.max(0, inCart(item.itemId) - available.quantity);
   };
 
@@ -156,6 +148,7 @@ const SalesEntryPage = () => {
   };
 
   const scanBill = useCallback(async (file) => {
+    billFileRef.current = file;
     setBillImageUrl(URL.createObjectURL(file));
     setScanResult(null);
     setScanError('');
@@ -173,7 +166,7 @@ const SalesEntryPage = () => {
       // An unrecognised customer stays blank so the bill cannot go to the wrong account.
       setCustomerId(result.customer?._id || '');
       setBillNumber(result.billNumber);
-      setBillDate(result.billDate);
+      setBillDate(result.billDate || photo?.billDate || '');
       // Printed bills rarely say how they were paid, so start from how this customer usually pays.
       setPaymentMethod(result.payment.method || (result.customer?.customerType === 'credit' ? 'credit' : 'cash'));
       setDueDate('');
@@ -184,6 +177,7 @@ const SalesEntryPage = () => {
     } finally {
       setScanProgress(null);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [customers, stock]);
 
   // A bill chosen on the home page is read once customers and stock have loaded.
@@ -218,11 +212,32 @@ const SalesEntryPage = () => {
     setScanError('');
   };
 
+  // A sale only takes stock out. Items the stock cannot cover go through Restock first.
+  const missingStock = useMemo(() => {
+    const needs = new Map();
+    saleItems.forEach((item) => {
+      if (item.isNew) {
+        const key = item.name.toLowerCase();
+        const need = needs.get(key) || { name: item.name, mrp: item.mrp, piecesPerCase: item.piecesPerCase, quantity: 0, sellingPrice: 0, isNew: true };
+        need.quantity += item.quantity;
+        need.sellingPrice = Math.max(need.sellingPrice, item.priceAtSale);
+        needs.set(key, need);
+      } else {
+        const available = stock.find((s) => s._id === item.itemId);
+        const short = available ? inCart(item.itemId) - available.quantity : 0;
+        if (short > 0) needs.set(item.itemId, { name: item.name, mrp: item.mrp, piecesPerCase: item.piecesPerCase, quantity: short, sellingPrice: item.priceAtSale, location: item.locationTakenFrom, isNew: false });
+      }
+    });
+    return [...needs.values()];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [saleItems, stock]);
+
+  const goRestock = () => navigate('/stock/receive', { state: { needed: missingStock, billFile: billFileRef.current, photo } });
+
   // The first thing still missing, shown beside the disabled button.
   const blocker = !customerId ? 'Select a customer.'
     : saleItems.length === 0 ? 'Add at least one item.'
-    : saleItems.some((item) => item.isNew && !item.name.trim()) ? 'Every new item needs a name.'
-    : saleItems.some((item) => item.isNew && !(item.piecesPerCase >= 1)) ? 'Every new item needs pieces per case.'
+    : missingStock.length > 0 ? `Restock ${missingStock.length === 1 ? 'the item' : `${missingStock.length} items`} first, or remove ${missingStock.length === 1 ? 'it' : 'them'} from this sale.`
     : saleItems.some((item) => item.quantity < 1) ? 'Every item needs at least 1 piece. Remove any you do not want.'
     : paymentMethod === 'credit' && !dueDate ? 'Set a due date.'
     : paymentMethod === 'cheque' && !chequeComplete(cheque) ? 'Enter the cheque number, bank and date.'
@@ -234,20 +249,21 @@ const SalesEntryPage = () => {
     try {
       await recordSale({
         customerId,
-        items: saleItems.map(({ itemId, isNew, topUp, mrp, quantity, cases, pieces, piecesPerCase, priceAtSale, name, locationTakenFrom }) => ({
-          itemId, topUp, mrp, quantity, cases, pieces, piecesPerCase, priceAtSale, name,
-          locationTakenFrom: isNew ? newItemLocation : locationTakenFrom,
-          ...(isNew && { newItem: true }),
-        })),
+        items: saleItems.map(({ itemId, mrp, quantity, cases, pieces, piecesPerCase, priceAtSale, name, locationTakenFrom }) => ({ itemId, mrp, quantity, cases, pieces, piecesPerCase, priceAtSale, name, locationTakenFrom })),
         discountAmount: percent > 0 ? 0 : flat,
         discountPercentage: percent,
         paymentMethod,
         ...(billNumber.trim() && { billNumber }),
         ...(billDate && { billDate }),
+        ...(photo && { billPhotoId: photo._id, agency: photo.agency }),
         ...(paymentMethod === 'credit' && { dueDate }),
         ...(paymentMethod === 'cheque' && { cheque }),
       });
-      toast(`Sale saved for ${selectedCustomer.name}: ${money(total)}.`);
+      toast(`Sale saved for ${selectedCustomer.name}: ${money(total)}. Stock reduced.`);
+      if (photo) {
+        navigate('/photos');
+        return;
+      }
       resetSale();
       await loadData();
     } catch (err) {
@@ -279,7 +295,7 @@ const SalesEntryPage = () => {
         className="sr-only"
         aria-label="Choose bill image"
         disabled={reading}
-        onChange={(e) => { if (e.target.files[0]) scanBill(e.target.files[0]); e.target.value = ''; }}
+        onChange={(e) => { if (e.target.files[0]) { setPhoto(null); scanBill(e.target.files[0]); } e.target.value = ''; }}
       />
     </label>
   );
@@ -288,6 +304,7 @@ const SalesEntryPage = () => {
     <>
       <PageHeader title="New sale" subtitle="Fill this in by hand, or add a bill image to fill it in for you." action={billInput} />
 
+      {photo && <p className="mb-4 text-sm text-slate-600">Photo from <strong className="capitalize">{photo.agency}</strong>, sent for {photo.billDate}. After you confirm, it moves to Entered.</p>}
       {reading && <div role="status" className="mb-4 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2.5 text-sm text-sky-900">Reading the bill... {scanProgress}%</div>}
       {scanError && <Alert className="mb-4">{scanError}</Alert>}
       {billImageUrl && scanResult && (
@@ -309,16 +326,6 @@ const SalesEntryPage = () => {
                   </div>
                 )}
               </dl>
-              {saleItems.some((item) => item.isNew) && (
-                <div className="mt-3 rounded-lg bg-slate-50 p-3">
-                  <p className="font-medium text-slate-800">{saleItems.filter((item) => item.isNew).length} new items will be saved to Stock with their MRP</p>
-                  <Field label="Stock location for new items" className="mt-2 sm:max-w-xs">
-                    <Select value={newItemLocation} onChange={(e) => setNewItemLocation(e.target.value)}>
-                      {locations.map((loc) => <option key={loc} value={loc}>{locationName(loc)}</option>)}
-                    </Select>
-                  </Field>
-                </div>
-              )}
               {scanResult.notes.length > 0 && <ul className="mt-3 list-disc space-y-1 pl-5 text-slate-700">{scanResult.notes.map((note) => <li key={note}>{note}</li>)}</ul>}
               {scanResult.unread.length > 0 && (
                 <div className="mt-3"><p className="font-medium text-slate-700">Lines not matched to your stock</p><ul className="mt-1 list-disc space-y-1 pl-5 text-slate-700">{scanResult.unread.map((text) => <li key={text}>{text}</li>)}</ul></div>
@@ -327,6 +334,16 @@ const SalesEntryPage = () => {
             </div>
           </div>
         </Card>
+      )}
+
+      {missingStock.length > 0 && (
+        <div role="alert" className="mb-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+          <div>
+            <p className="font-semibold">{missingStock.length === 1 ? '1 item does' : `${missingStock.length} items do`} not have enough stock</p>
+            <p className="mt-0.5">A sale only takes stock out, so this stock has to come in through Restock first. Your sale is not saved yet.</p>
+          </div>
+          <Button onClick={goRestock}><PackagePlus className="h-4 w-4" aria-hidden="true" /> Restock these first</Button>
+        </div>
       )}
 
       <div className="grid gap-6">
@@ -345,7 +362,7 @@ const SalesEntryPage = () => {
               <Field label="Bill number (optional)"><Input value={billNumber} onChange={(e) => setBillNumber(e.target.value)} /></Field>
               <Field label="Bill date"><Input type="date" value={billDate} onChange={(e) => setBillDate(e.target.value)} /></Field>
             </div>
-            {selectedCustomer?.customerType && <p className="mt-2 text-sm text-slate-500">{selectedCustomer.customerType === 'cash' ? 'Cash customer: cash or cheque only.' : `Credit customer: ${selectedCustomer.creditDays} days to pay.`}</p>}
+            {selectedCustomer?.customerType && <p className="mt-2 text-sm text-slate-500">{`Usually pays by ${selectedCustomer.customerType}. Credit bills are due in ${selectedCustomer.creditDays} days.`}</p>}
           </Card>
 
           <Card title="Items" flush>
@@ -374,24 +391,16 @@ const SalesEntryPage = () => {
                 <tbody>
                   {saleItems.map((item, index) => (
                     <tr key={`${item.itemId}-${item.free ? 'free' : 'paid'}-${index}`}>
-                      <Td className="min-w-[280px]">
-                        {item.isNew
-                          ? <Input aria-label={`Name of item ${index + 1}`} value={item.name} onChange={(e) => updateRow(index, { name: e.target.value })} />
-                          : <span className="font-medium">{item.name}</span>}
+                      <Td className="min-w-[240px]">
+                        <span className="font-medium">{item.name}</span>
                         <div className="mt-1 flex flex-wrap items-center gap-1 text-xs text-slate-500">
                           {item.free && <Badge tone="good">Free</Badge>}
-                          {item.isNew && <Badge tone="info">New item</Badge>}
-                          {item.isNew && (
-                            <label className="flex items-center gap-1">{'Per case'}<input className="h-6 w-12 rounded border border-slate-300 px-1" type="number" min="1" aria-label={`Pieces per case of item ${index + 1}`} value={item.piecesPerCase} onChange={(e) => {
-                              const piecesPerCase = Math.max(1, parseInt(e.target.value, 10) || 1);
-                              updateRow(index, { piecesPerCase, cases: Math.floor(item.quantity / piecesPerCase), pieces: item.quantity % piecesPerCase });
-                            }} /></label>
-                          )}
+                          {item.isNew && <Badge tone="danger">Not in stock</Badge>}
                           {!item.isNew && <span>{locationName(item.locationTakenFrom)}</span>}
-                          {shortBy(item) > 0 && <Badge tone="warning">Adds {shortBy(item)} to stock</Badge>}
+                          {shortBy(item) > 0 && <Badge tone="danger">Short by {shortBy(item)}</Badge>}
                         </div>
                       </Td>
-                      <Td><Input className="!w-24" type="number" min="0" step="0.01" aria-label={`MRP of ${item.name}`} value={item.mrp ?? ''} onChange={(e) => updateRow(index, { mrp: e.target.value === '' ? null : Number(e.target.value) })} /></Td>
+                      <Td className="tabular whitespace-nowrap text-slate-600">{item.mrp ? money(item.mrp) : '-'}</Td>
                       <Td><Input className="!w-20" type="number" min="0" aria-label={`Cases of ${item.name}`} value={item.cases} onChange={(e) => handleQuantity(index, 'cases', e.target.value)} /></Td>
                       <Td><Input className="!w-20" type="number" min="0" aria-label={`Pieces of ${item.name}`} value={item.pieces} onChange={(e) => handleQuantity(index, 'pieces', e.target.value)} /></Td>
                       <Td><Input className="!w-24" type="number" min="0" step="0.01" aria-label={`Price of ${item.name}`} value={item.priceAtSale} onChange={(e) => handlePrice(index, e.target.value)} /></Td>
@@ -409,12 +418,9 @@ const SalesEntryPage = () => {
           <Card title="Payment">
             <div className="grid gap-4">
               <div className="grid grid-cols-3 rounded-lg border border-slate-300 p-0.5" role="group" aria-label="Payment method">
-                {METHODS.map(([value, label]) => {
-                  const off = value === 'credit' && !creditAllowed;
-                  return (
-                    <button key={value} type="button" disabled={off} aria-pressed={paymentMethod === value} onClick={() => setPaymentMethod(value)} title={off ? 'Cash customers cannot buy on credit' : undefined} className={`rounded-md py-1.5 text-sm font-medium disabled:cursor-not-allowed disabled:text-slate-300 ${paymentMethod === value ? 'bg-brand-600 text-white' : 'text-slate-600 hover:bg-slate-100 disabled:hover:bg-transparent'}`}>{label}</button>
-                  );
-                })}
+                {METHODS.map(([value, label]) => (
+                  <button key={value} type="button" aria-pressed={paymentMethod === value} onClick={() => setPaymentMethod(value)} className={`rounded-md py-1.5 text-sm font-medium ${paymentMethod === value ? 'bg-brand-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>{label}</button>
+                ))}
               </div>
               {paymentMethod === 'credit' && <Field label="Due date"><Input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} /></Field>}
               {paymentMethod === 'cheque' && <ChequeFields cheque={cheque} onChange={setCheque} />}

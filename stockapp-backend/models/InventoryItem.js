@@ -17,6 +17,10 @@ const InventoryItemSchema = new mongoose.Schema({
     type: Number,
     min: [0, 'MRP cannot be negative'],
   },
+  costPrice: { // Latest cost per piece from a company order
+    type: Number,
+    min: [0, 'Cost cannot be negative'],
+  },
   quantity: {
     type: Number,
     required: [true, 'Quantity is required'],

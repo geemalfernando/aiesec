@@ -87,7 +87,7 @@ const SalesHistoryPage = () => {
                         </button>
                       </Td>
                       <Td className="whitespace-nowrap text-slate-600">{formatDateTime(sale.saleDate || sale.createdAt)}</Td>
-                      <Td className="font-medium">{sale.customerName}{sale.billNumber && <div className="text-xs font-normal text-slate-500">Bill {sale.billNumber}</div>}</Td>
+                      <Td className="font-medium">{sale.customerName}{(sale.billNumber || sale.agency) && <div className="text-xs font-normal capitalize text-slate-500">{[sale.billNumber && `Bill ${sale.billNumber}`, sale.agency].filter(Boolean).join(' · ')}</div>}</Td>
                       <Td className="capitalize text-slate-600">{sale.paymentMethod}</Td>
                       <Td><Badge tone={tone}>{label}</Badge></Td>
                       <Td align="right" className="whitespace-nowrap font-medium">{money(sale.totalAmount)}</Td>

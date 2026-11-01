@@ -13,6 +13,9 @@ const salesRoutes = require('./routes/salesRoutes');     // NEW: Import sales ro
 const inventoryRoutes = require('./routes/inventoryRoutes'); // NEW: Import inventory routes
 const dashboardRoutes = require('./routes/dashboardRoutes'); // NEW: Import dashboard routes
 const paymentRoutes = require('./routes/paymentRoutes');
+const reportRoutes = require('./routes/reportRoutes');
+const billPhotoRoutes = require('./routes/billPhotoRoutes');
+const restockRoutes = require('./routes/restockRoutes');
 
 const app = express();
 
@@ -44,6 +47,9 @@ app.use('/api/sales', salesRoutes);     // Mount sales routes
 app.use('/api/inventory', inventoryRoutes);     // NEW: Mount inventory routes
 app.use('/api/dashboard', dashboardRoutes);     // NEW: Mount dashboard routes
 app.use('/api/payments', paymentRoutes);
+app.use('/api/reports', reportRoutes);
+app.use('/api/bill-photos', billPhotoRoutes);
+app.use('/api/restocks', restockRoutes);
 
 // --- Database Connection ---
 // Establishes connection to your MongoDB database.

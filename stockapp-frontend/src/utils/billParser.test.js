@@ -148,6 +148,7 @@ describe('real photographed bill, nothing in stock yet', () => {
     expect(bill.customerName).toBe('Silva Stores');
     expect(bill.customerAddress).toBe('1 A, Sampletown');
   });
+  test('reads the company name for a restock', () => expect(bill.supplierName).toBe('Abc Distributors'));
   test('reports a free line whose name is unreadable', () => expect(bill.unread.join()).toMatch(/Name could not be read: 3 PKT \(free\)/));
   test('a second reading recovers the free line', () => {
     const second = parseBill('5 SERA TABLE SALT 400GX22-MRP120.00\nPKT 22 90.00 1,980.00\nSERA » TABLE SALT 400GX22-MRP120. 00\nPKT 3 0, 00 0. 00', [], []);
@@ -174,7 +175,7 @@ describe('same bill with existing data', () => {
   test('matches stock despite OCR mistakes, and keeps its location', () => {
     expect(bill.items[1]).toMatchObject({ itemId: 'm', isNew: false, locationTakenFrom: 'lorry1', priceAtSale: 147.9, mrp: 170 });
   });
-  test('short stock is still a row, topped up on saving', () => expect(bill.items[5]).toMatchObject({ itemId: 'c', quantity: 4, topUp: true }));
+  test('short stock is still a row, to be checked before saving', () => expect(bill.items[5]).toMatchObject({ itemId: 'c', quantity: 4 }));
   test('finds a customer by outlet ID when the name was misread', () => {
     const found = parseBill('OUTLET ID : 100001\nCustomer :\nSILVA STOKES XX', [{ _id: 'o', name: 'Other Name', outletId: '100001' }], []);
     expect(found.customer._id).toBe('o');

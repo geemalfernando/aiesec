@@ -1,11 +1,12 @@
 // src/components/Layout.js
 import React, { useState } from 'react';
 import { Link, NavLink } from 'react-router-dom';
-import { ArrowLeftRight, Boxes, FileClock, Home, Landmark, Menu, Receipt, ShoppingCart, Users, X } from 'lucide-react';
+import { ArrowLeftRight, Boxes, ClipboardList, FileClock, Home, Images, Landmark, Menu, PackagePlus, Receipt, ShoppingCart, Users, X } from 'lucide-react';
 
 const NAV = [
   { items: [{ to: '/', label: 'Home', icon: Home }] },
   { title: 'Sales', items: [
+    { to: '/photos', label: 'Bill photos', icon: Images },
     { to: '/sales/new', label: 'New sale', icon: ShoppingCart },
     { to: '/sales', label: 'Sales history', icon: FileClock },
   ] },
@@ -16,6 +17,8 @@ const NAV = [
   { title: 'Records', items: [
     { to: '/customers', label: 'Customers', icon: Users },
     { to: '/stock', label: 'Stock', icon: Boxes },
+    { to: '/stock/forecast', label: 'What to order', icon: ClipboardList },
+    { to: '/stock/receive', label: 'Restock', icon: PackagePlus },
     { to: '/stock/transfer', label: 'Stock transfer', icon: ArrowLeftRight },
   ] },
 ];
