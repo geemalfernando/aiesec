@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Camera, PackagePlus, Plus, Trash2 } from 'lucide-react';
 import { fetchInventoryItems, fetchLocations } from '../api/inventory';
+import { saveImageCopy } from '../api/billPhotos';
 import { fetchRestocks, recordRestock } from '../api/reports';
 import { Alert, Badge, Button, buttonClass, Card, EmptyState, Field, Input, PageHeader, PageLoading, Select, Table, Td, Th, useToast } from '../components/ui';
 import { fillUnreadLines, parseBill } from '../utils/billParser';
@@ -16,6 +17,7 @@ const RestockPage = () => {
   const routerLocation = useLocation();
   const navigate = useNavigate();
   // Sent here by a sale that needs stock: the bill goes back to the sale once this is saved.
+  const invoiceFile = useRef(null);
   const fromSale = useRef(routerLocation.state?.needed ? routerLocation.state : null);
   const [restocks, setRestocks] = useState(null);
   const [stock, setStock] = useState([]);
@@ -57,6 +59,7 @@ const RestockPage = () => {
   useEffect(() => { load(); }, [load]);
 
   const readImage = async (file) => {
+    invoiceFile.current = file;
     setImageUrl(URL.createObjectURL(file));
     setScan(null);
     setScanError('');
@@ -109,7 +112,12 @@ const RestockPage = () => {
     setError('');
     setSaving(true);
     try {
-      await recordRestock({ supplierName, billDate, billNumber, location, items: rows });
+      const saved = await recordRestock({ supplierName, billDate, billNumber, location, items: rows });
+      if (invoiceFile.current) {
+        await saveImageCopy(`/restocks/${saved._id}/image`, invoiceFile.current)
+          .catch(() => toast('Stock added, but the image could not be saved to the folder.'));
+        invoiceFile.current = null;
+      }
       toast(`Added ${plural(rows.length, 'item')} to ${locationName(location)}. Stock increased.`);
       if (fromSale.current) {
         navigate('/sales/new', { state: { billFile: fromSale.current.billFile, photo: fromSale.current.photo } });

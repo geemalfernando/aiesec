@@ -1,5 +1,12 @@
 // Runs against a throwaway in-memory MongoDB, never the database in .env.
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { test, before, after, beforeEach } = require('node:test');
+
+// Images from tests go to a temporary folder, never the real one.
+const IMAGES = fs.mkdtempSync(path.join(os.tmpdir(), 'stockapp-images-'));
+process.env.IMAGES_DIR = IMAGES;
 const assert = require('node:assert/strict');
 const express = require('express');
 const mongoose = require('mongoose');
@@ -12,6 +19,7 @@ const Payment = require('../models/Payment');
 const Restock = require('../models/Restock');
 const BillPhoto = require('../models/BillPhoto');
 const { today, addDays } = require('../utils/businessDate');
+const { syncBillPhotos } = require('../utils/imageStore');
 
 let mongod, server, base, item;
 const day = (offset) => addDays(today(), offset).toISOString().slice(0, 10);
@@ -419,6 +427,69 @@ test('the forecast joins stock, sales and the last company', async () => {
   assert.ok(soap.orderCases >= 1);
   assert.equal(soap.orderPieces % 10, 0);
   assert.equal(soap.estimatedCost, soap.orderPieces * 80);
+});
+
+const listFiles = (dir) => (fs.existsSync(dir) ? fs.readdirSync(dir, { recursive: true }).filter((name) => /\.(jpg|png)$/.test(name)) : []);
+
+test('accepted photos are saved under daily bills, by agency and day', async () => {
+  const photo = await photoDoc({ billDate: '2026-11-01' });
+  assert.equal(await syncBillPhotos(), 1);
+  const expected = path.join(IMAGES, 'Daily Bills', 'Piliyandala', '2026-11-01', `bill-${photo._id}.jpg`);
+  assert.deepEqual(fs.readFileSync(expected), Buffer.from([0xff, 0xd8, 0xff]));
+  assert.equal((await BillPhoto.findById(photo._id)).savedPath, expected);
+  assert.equal(await syncBillPhotos(), 0);
+});
+
+test('a late photo cannot be entered or saved until it is accepted', async () => {
+  const photo = await photoDoc({ status: 'awaiting_approval', late: true, billDate: '2026-10-30' });
+  assert.equal((await sell(credit, 'cash', { billPhotoId: photo._id })).status, 409);
+  assert.equal((await InventoryItem.findById(item._id)).quantity, 1000);
+  await syncBillPhotos();
+  assert.equal((await BillPhoto.findById(photo._id)).savedPath, undefined);
+  assert.equal((await call('PATCH', `/api/bill-photos/${photo._id}/status`, { status: 'pending' })).status, 200);
+  await syncBillPhotos();
+  assert.ok(fs.existsSync((await BillPhoto.findById(photo._id)).savedPath));
+  assert.equal((await sell(credit, 'cash', { billPhotoId: photo._id })).status, 201);
+});
+
+test('a rejected photo is never saved, and can be accepted later', async () => {
+  const photo = await photoDoc({ status: 'awaiting_approval', late: true, billDate: '2026-10-29' });
+  assert.equal((await call('PATCH', `/api/bill-photos/${photo._id}/status`, { status: 'rejected' })).status, 200);
+  await syncBillPhotos();
+  assert.equal(listFiles(path.join(IMAGES, 'Daily Bills', 'Piliyandala', '2026-10-29')).length, 0);
+  assert.equal((await call('PATCH', `/api/bill-photos/${photo._id}/status`, { status: 'pending' })).status, 200);
+});
+
+test('a photo cannot skip acceptance by being marked done or skipped', async () => {
+  const photo = await photoDoc({ status: 'awaiting_approval' });
+  assert.equal((await call('PATCH', `/api/bill-photos/${photo._id}/status`, { status: 'done' })).status, 400);
+  assert.equal((await call('PATCH', `/api/bill-photos/${photo._id}/status`, { status: 'skipped' })).status, 409);
+});
+
+test('a company invoice image is saved under company invoices', async () => {
+  const { body } = await order({ supplierName: 'CBL / Ltd', billNumber: 'R/9', billDate: '2026-10-20' });
+  const res = await fetch(`${base}/api/restocks/${body.data._id}/image`, { method: 'POST', headers: { 'Content-Type': 'image/png' }, body: Buffer.from([1, 2, 3]) });
+  assert.equal(res.status, 200);
+  const saved = (await Restock.findById(body.data._id)).imagePath;
+  assert.ok(saved.startsWith(path.join(IMAGES, 'Company Invoices', '2026-10-20')));
+  assert.ok(saved.endsWith('.png'));
+  assert.ok(!path.relative(IMAGES, saved).includes('..'));
+});
+
+test('an image added on this computer is saved under the office folder', async () => {
+  const { body } = await sell(credit, 'cash', { billDate: '2026-10-21' });
+  await fetch(`${base}/api/sales/${body.data._id}/image`, { method: 'POST', headers: { 'Content-Type': 'image/jpeg' }, body: Buffer.from([1]) });
+  assert.ok(fs.existsSync(path.join(IMAGES, 'Daily Bills', 'Office', '2026-10-21', `bill-${body.data._id}.jpg`)));
+});
+
+test('a photo the agency removed is moved aside, not deleted', async () => {
+  const photo = await photoDoc({ billDate: new Date().toLocaleDateString('en-CA') });
+  await syncBillPhotos();
+  const { savedPath } = await BillPhoto.findById(photo._id);
+  await BillPhoto.deleteOne({ _id: photo._id });
+  await syncBillPhotos();
+  assert.equal(fs.existsSync(savedPath), false);
+  assert.equal(listFiles(path.join(IMAGES, 'Removed By Agency')).some((name) => name.includes(String(photo._id))), true);
 });
 
 test('a customer with open bills cannot be deleted', async () => {

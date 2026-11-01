@@ -4,7 +4,9 @@ const cors = require('cors');
 require('dotenv').config();
 
 // Import database connection function
+const mongoose = require('mongoose');
 const connectDB = require('./config/db');
+const { startImageSync } = require('./utils/imageStore');
 
 // Import all route files
 const adminRoutes = require('./routes/adminRoutes'); // This is the new/updated admin route file
@@ -54,6 +56,7 @@ app.use('/api/restocks', restockRoutes);
 // --- Database Connection ---
 // Establishes connection to your MongoDB database.
 connectDB();
+mongoose.connection.once('open', () => startImageSync());
 
 // --- Global Error Handling Middleware ---
 // This MUST be the last middleware defined.

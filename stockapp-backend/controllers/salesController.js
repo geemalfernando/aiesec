@@ -7,6 +7,7 @@ const BillPhoto = require('../models/BillPhoto');
 const { chequeFields } = require('./paymentController');
 const { today, addDays, parseDay } = require('../utils/businessDate');
 const { OPEN_BILL_MATCH, BALANCE_EXPR, refreshStatus } = require('../utils/billing');
+const { dayOf, saveDailyBill } = require('../utils/imageStore');
 const mongoose = require('mongoose');
 
 exports.recordSale = async (req, res, next) => {
@@ -140,9 +141,9 @@ exports.recordSale = async (req, res, next) => {
     }], { session: session });
 
     if (billPhotoId) {
-      const photo = await BillPhoto.findOneAndUpdate({ _id: billPhotoId, status: { $ne: 'done' } }, { status: 'done', sale: newSale[0]._id }, { session });
+      const photo = await BillPhoto.findOneAndUpdate({ _id: billPhotoId, status: 'pending' }, { status: 'done', sale: newSale[0]._id }, { session });
       if (!photo) {
-        const error = new Error('This bill photo has already been entered.');
+        const error = new Error('This photo has already been entered, or is waiting to be accepted.');
         error.statusCode = 409; throw error;
       }
     }
@@ -172,6 +173,20 @@ exports.recordSale = async (req, res, next) => {
     await session.abortTransaction();
     session.endSession();
     next(error.code === 11000 ? Object.assign(new Error('This cheque number is already recorded for this bank.'), { statusCode: 409 }) : error);
+  }
+};
+
+// Keeps a copy of a bill image added directly on this computer.
+exports.saveSaleImage = async (req, res, next) => {
+  try {
+    const sale = await Sale.findById(req.params.saleId);
+    if (!sale) throw Object.assign(new Error('Sale not found.'), { statusCode: 404 });
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) throw Object.assign(new Error('No image was sent.'), { statusCode: 400 });
+    sale.imagePath = await saveDailyBill({ agency: sale.agency || 'Office', day: dayOf(sale.billDate || sale.createdAt), id: sale._id, data: req.body, type: req.headers['content-type'] });
+    await sale.save();
+    res.status(200).json({ success: true, data: { imagePath: sale.imagePath } });
+  } catch (error) {
+    next(error);
   }
 };
 

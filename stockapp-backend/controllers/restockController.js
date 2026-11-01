@@ -4,6 +4,7 @@ const InventoryItem = require('../models/InventoryItem');
 const Restock = require('../models/Restock');
 const { parseDay } = require('../utils/businessDate');
 const { round2 } = require('../utils/billing');
+const { dayOf, saveCompanyInvoice } = require('../utils/imageStore');
 
 const fail = (message, statusCode = 400) => Object.assign(new Error(message), { statusCode });
 const escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -90,6 +91,27 @@ exports.recordRestock = async (req, res, next) => {
     next(error);
   } finally {
     session.endSession();
+  }
+};
+
+// Keeps a copy of the company's invoice image on this computer.
+exports.saveRestockImage = async (req, res, next) => {
+  try {
+    const restock = await Restock.findById(req.params.restockId);
+    if (!restock) throw fail('Restock not found.', 404);
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) throw fail('No image was sent.');
+    restock.imagePath = await saveCompanyInvoice({
+      supplierName: restock.supplierName,
+      billNumber: restock.billNumber,
+      day: dayOf(restock.billDate || restock.createdAt),
+      id: restock._id,
+      data: req.body,
+      type: req.headers['content-type'],
+    });
+    await restock.save();
+    res.status(200).json({ success: true, data: { imagePath: restock.imagePath } });
+  } catch (error) {
+    next(error);
   }
 };
 

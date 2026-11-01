@@ -70,6 +70,7 @@ const HomePage = () => {
         stock: stock || [],
         owing: owing || [],
         photos: photos?.photos || [],
+        latePhotos: (photos?.counts || []).filter((row) => row.status === 'awaiting_approval').reduce((sum, row) => sum + row.count, 0),
       });
     };
     load();
@@ -94,7 +95,7 @@ const HomePage = () => {
     return <><PageHeader title="Home" subtitle={today} action={billActions} /><PageLoading /></>;
   }
 
-  const { sales, cheques, due, overdue, stock, owing, photos = [] } = data;
+  const { sales, cheques, due, overdue, stock, owing, photos = [], latePhotos = 0 } = data;
   const todayKey = localDayKey();
   const monthKey = todayKey.slice(0, 7);
   const dayOf = (sale) => localDayKey(sale.saleDate || sale.createdAt);
@@ -104,7 +105,7 @@ const HomePage = () => {
   const toDeposit = [...cheques.missed, ...cheques.dueToday];
   const lowStock = stock.filter((item) => item.quantity < LOW_STOCK_PIECES);
 
-  const hasTasks = photos.length || cheques.missed.length || cheques.dueToday.length || cheques.bounced.length || overdue.length || dueThisWeek.length || lowStock.length;
+  const hasTasks = latePhotos || photos.length || cheques.missed.length || cheques.dueToday.length || cheques.bounced.length || overdue.length || dueThisWeek.length || lowStock.length;
 
   return (
     <>
@@ -125,6 +126,7 @@ const HomePage = () => {
               <EmptyState icon={CheckCircle2} title="Nothing needs attention today" />
             ) : (
               <ul className="divide-y divide-slate-100">
+                {latePhotos > 0 && <TaskRow to="/photos" icon={Images} tone={RED} title={`Accept or refuse ${plural(latePhotos, 'late bill photo')}`} detail="Sent after midnight of the bill's day" />}
                 {photos.length > 0 && <TaskRow to="/photos" icon={Images} tone={AMBER} title={`Enter ${plural(photos.length, 'bill photo')}`} detail="Sent by the agencies" />}
                 {cheques.missed.length > 0 && <TaskRow to="/cheques" icon={Landmark} tone={RED} title={`Deposit ${plural(cheques.missed.length, 'missed cheque')}`} detail={`Oldest dated ${formatDay(cheques.missed[0].chequeDate)}`} amount={sum(cheques.missed, 'amount')} />}
                 {cheques.dueToday.length > 0 && <TaskRow to="/cheques" icon={Landmark} tone={AMBER} title={`Deposit ${plural(cheques.dueToday.length, 'cheque')} today`} detail={cheques.dueToday.map((c) => c.customer?.name).filter(Boolean).join(', ')} amount={sum(cheques.dueToday, 'amount')} />}

@@ -17,6 +17,7 @@ const RestockSchema = new mongoose.Schema({
   supplierName: { type: String, required: true, trim: true },
   billNumber: { type: String, trim: true },
   billDate: { type: Date },
+  imagePath: { type: String },
   location: { type: String, required: true },
   items: [RestockItemSchema],
   totalAmount: { type: Number, default: 0, min: 0 },

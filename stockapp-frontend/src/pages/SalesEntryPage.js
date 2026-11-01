@@ -4,6 +4,7 @@ import { Camera, PackagePlus, Plus, ShoppingCart, Trash2 } from 'lucide-react';
 import { addCustomer, fetchCustomers } from '../api/customers';
 import { fetchInventoryItems } from '../api/inventory';
 import { recordSale } from '../api/sales';
+import { saveImageCopy } from '../api/billPhotos';
 import { Alert, Badge, Button, buttonClass, Card, EmptyState, Field, Input, Modal, PageHeader, PageLoading, Select, Table, Td, Th, useToast } from '../components/ui';
 import ChequeFields, { EMPTY_CHEQUE, chequeComplete } from '../components/sales/ChequeFields';
 import CustomerForm from '../components/sales/CustomerForm';
@@ -210,6 +211,7 @@ const SalesEntryPage = () => {
     setBillImageUrl('');
     setBillText('');
     setScanError('');
+    billFileRef.current = null;
   };
 
   // A sale only takes stock out. Items the stock cannot cover go through Restock first.
@@ -247,7 +249,7 @@ const SalesEntryPage = () => {
     setError('');
     setSaving(true);
     try {
-      await recordSale({
+      const saved = await recordSale({
         customerId,
         items: saleItems.map(({ itemId, mrp, quantity, cases, pieces, piecesPerCase, priceAtSale, name, locationTakenFrom }) => ({ itemId, mrp, quantity, cases, pieces, piecesPerCase, priceAtSale, name, locationTakenFrom })),
         discountAmount: percent > 0 ? 0 : flat,
@@ -260,6 +262,11 @@ const SalesEntryPage = () => {
         ...(paymentMethod === 'cheque' && { cheque }),
       });
       toast(`Sale saved for ${selectedCustomer.name}: ${money(total)}. Stock reduced.`);
+      // Agency photos reach the folder by themselves; an image added here is copied now.
+      if (!photo && billFileRef.current) {
+        await saveImageCopy(`/sales/${saved.data._id}/image`, billFileRef.current)
+          .catch(() => toast('Sale saved, but the image could not be saved to the folder.'));
+      }
       if (photo) {
         navigate('/photos');
         return;
