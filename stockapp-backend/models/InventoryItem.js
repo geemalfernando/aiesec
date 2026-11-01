@@ -13,6 +13,10 @@ const InventoryItemSchema = new mongoose.Schema({
     required: [true, 'Price is required'],
     min: [0, 'Price cannot be negative'],
   },
+  mrp: { // Maximum retail price printed on the bill
+    type: Number,
+    min: [0, 'MRP cannot be negative'],
+  },
   quantity: {
     type: Number,
     required: [true, 'Quantity is required'],

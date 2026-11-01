@@ -2,25 +2,73 @@
 const Sale = require('../models/Sale');
 const Customer = require('../models/Customer');
 const InventoryItem = require('../models/InventoryItem');
+const Payment = require('../models/Payment');
+const { chequeFields } = require('./paymentController');
+const { today, addDays, parseDay } = require('../utils/businessDate');
+const { OPEN_BILL_MATCH, BALANCE_EXPR, refreshStatus } = require('../utils/billing');
 const mongoose = require('mongoose');
+
+// A bill records what already happened, so its lines may create new stock items
+// (saved with their MRP) or add the stock the system was missing.
+const prepareBillLines = async (items, session) => {
+  if (!Array.isArray(items)) return;
+  for (const item of items) {
+    if (!item.newItem) continue;
+    const name = String(item.name || '').trim();
+    if (!name || !item.locationTakenFrom) {
+      const error = new Error('Each new item needs a name and a location.');
+      error.statusCode = 400; throw error;
+    }
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    let stock = await InventoryItem.findOne({ name: new RegExp(`^${escaped}$`, 'i'), location: item.locationTakenFrom }).session(session);
+    if (!stock) {
+      [stock] = await InventoryItem.create([{
+        name,
+        price: item.priceAtSale > 0 ? item.priceAtSale : 0,
+        mrp: item.mrp ?? undefined,
+        quantity: 0,
+        cases: 0,
+        pieces: 0,
+        piecesPerCase: item.piecesPerCase,
+        location: item.locationTakenFrom,
+      }], { session });
+    }
+    item.itemId = String(stock._id);
+    if (item.priceAtSale > 0 && stock.price === 0) {
+      stock.price = item.priceAtSale;
+      await stock.save({ session });
+    }
+  }
+
+  const needed = new Map();
+  items.filter((item) => item.topUp).forEach((item) => {
+    const quantity = item.cases * item.piecesPerCase + item.pieces;
+    needed.set(item.itemId, (needed.get(item.itemId) || 0) + quantity);
+  });
+  for (const [itemId, quantity] of needed) {
+    const stock = await InventoryItem.findById(itemId).session(session);
+    if (stock && stock.quantity < quantity) {
+      stock.quantity = quantity;
+      stock.cases = Math.floor(quantity / stock.piecesPerCase);
+      stock.pieces = quantity % stock.piecesPerCase;
+      await stock.save({ session });
+    }
+  }
+};
 
 exports.recordSale = async (req, res, next) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
-    const { customerId, items, discountAmount, discountPercentage, paymentMethod, dueDate } = req.body;
+    const { customerId, items, discountAmount, discountPercentage, paymentMethod, dueDate, cheque, billNumber, billDate } = req.body;
 
     // --- Input Validation ---
     if (!customerId || !items || !Array.isArray(items) || items.length === 0 || !paymentMethod) {
       const error = new Error('Missing required fields: customer, items, or payment method.');
       error.statusCode = 400; throw error;
     }
-    // Conditional validation for dueDate
-    if (paymentMethod === 'credit' && !dueDate) {
-        const error = new Error('Due date is required for credit payment method.');
-        error.statusCode = 400; throw error;
-    }
+    const chequeData = paymentMethod === 'cheque' ? chequeFields(cheque || {}) : null;
 
     // --- Customer Validation ---
     const customer = await Customer.findById(customerId).session(session);
@@ -28,13 +76,24 @@ exports.recordSale = async (req, res, next) => {
       const error = new Error(`Customer with ID ${customerId} not found.`);
       error.statusCode = 404; throw error;
     }
+    if (paymentMethod === 'credit' && customer.customerType === 'cash') {
+      const error = new Error(`${customer.name} is a cash customer and cannot buy on credit.`);
+      error.statusCode = 400; throw error;
+    }
+
+    if (billNumber && await Sale.exists({ billNumber: String(billNumber).trim() }).session(session)) {
+      const error = new Error(`Bill ${billNumber} has already been entered.`);
+      error.statusCode = 409; throw error;
+    }
+
+    await prepareBillLines(items, session);
 
     // --- Item Validation and Price Calculation ---
     let calculatedTotalAmount = 0;
     const saleItemsData = [];
 
     for (const item of items) {
-      const { itemId, cases, pieces, piecesPerCase, locationTakenFrom } = item;
+      const { itemId, cases, pieces, piecesPerCase, locationTakenFrom, priceAtSale } = item;
       const quantity = (cases * piecesPerCase) + pieces;
 
       if (!itemId || cases === undefined || pieces === undefined || piecesPerCase === undefined || quantity < 1 || !locationTakenFrom) {
@@ -63,10 +122,17 @@ exports.recordSale = async (req, res, next) => {
         error.statusCode = 400; throw error;
       }
 
-      const itemPrice = inventoryItem.price;
+      // The rate on the bill can differ from the stock price, and free items are 0.
+      const itemPrice = Number.isFinite(priceAtSale) && priceAtSale >= 0 ? priceAtSale : inventoryItem.price;
       const itemSubtotal = itemPrice * quantity;
 
+      if (item.mrp !== undefined && item.mrp !== null && item.mrp !== inventoryItem.mrp) {
+        inventoryItem.mrp = item.mrp;
+        await inventoryItem.save({ session });
+      }
+
       saleItemsData.push({
+        mrp: inventoryItem.mrp,
         itemId: itemId,
         name: inventoryItem.name,
         quantity: quantity,
@@ -86,7 +152,8 @@ exports.recordSale = async (req, res, next) => {
     finalTotal = Math.max(0, finalTotal);
 
     // --- Update Inventory Stock ---
-    const updateStockPromises = items.map(async (item) => {
+    // One at a time: a sale can have the same stock twice, as a paid and a free line.
+    for (const item of items) {
       const soldQuantity = (item.cases * item.piecesPerCase) + item.pieces;
       const inventoryItem = await InventoryItem.findOne({ _id: item.itemId, location: item.locationTakenFrom }).session(session);
 
@@ -95,14 +162,20 @@ exports.recordSale = async (req, res, next) => {
         error.statusCode = 404; throw error;
       }
 
+      if (inventoryItem.quantity < soldQuantity) {
+        const error = new Error(`Insufficient stock at "${item.locationTakenFrom}" for item "${inventoryItem.name}". Available: ${inventoryItem.quantity}, Requested: ${soldQuantity}`);
+        error.statusCode = 400; throw error;
+      }
       inventoryItem.quantity -= soldQuantity;
       inventoryItem.cases = Math.floor(inventoryItem.quantity / inventoryItem.piecesPerCase);
       inventoryItem.pieces = inventoryItem.quantity % inventoryItem.piecesPerCase;
       await inventoryItem.save({ session });
-    });
-    await Promise.all(updateStockPromises);
+    }
 
     // --- Create the sale record ---
+    const billDueDate = paymentMethod === 'credit'
+      ? (dueDate ? parseDay(dueDate) : addDays(billDate ? parseDay(billDate) : today(), customer.creditDays))
+      : chequeData?.chequeDate; // If a sale's cheque bounces, the bill is already due
     const newSale = await Sale.create([{
       customer: customerId,
       items: saleItemsData,
@@ -110,9 +183,30 @@ exports.recordSale = async (req, res, next) => {
       discountAmount: discountAmount || 0,
       discountPercentage: discountPercentage || 0,
       paymentMethod: paymentMethod,
-      dueDate: paymentMethod === 'credit' ? dueDate : undefined, // Only add dueDate if credit
-      // salesPerson: req.user.id,
+      dueDate: billDueDate,
+      ...(billNumber && { billNumber: String(billNumber).trim() }),
+      ...(billDate && { billDate: parseDay(billDate) }),
+      amountPaid: paymentMethod === 'cash' ? finalTotal : 0,
+      pendingChequeAmount: paymentMethod === 'cheque' ? finalTotal : 0,
+      balanceDue: paymentMethod === 'credit' ? finalTotal : 0,
     }], { session: session });
+
+    refreshStatus(newSale[0]);
+    await newSale[0].save({ session });
+
+    if (chequeData) {
+      if (!(finalTotal > 0)) {
+        const error = new Error('A cheque sale must have an amount above zero.');
+        error.statusCode = 400; throw error;
+      }
+      await Payment.create([{
+        customer: customerId,
+        method: 'cheque',
+        amount: finalTotal,
+        allocations: [{ sale: newSale[0]._id, amount: finalTotal }],
+        ...chequeData,
+      }], { session });
+    }
 
     await session.commitTransaction();
     session.endSession();
@@ -121,7 +215,7 @@ exports.recordSale = async (req, res, next) => {
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
-    next(error);
+    next(error.code === 11000 ? Object.assign(new Error('This cheque number is already recorded for this bank.'), { statusCode: 409 }) : error);
   }
 };
 
@@ -163,7 +257,12 @@ exports.getSales = async (req, res, next) => {
       totalAmount: sale.totalAmount,
       paymentMethod: sale.paymentMethod,
       dueDate: sale.dueDate,
-      saleDate: sale.createdAt,
+      amountPaid: sale.amountPaid,
+      pendingChequeAmount: sale.pendingChequeAmount,
+      balanceDue: sale.balanceDue ?? (sale.paymentMethod === 'credit' ? sale.totalAmount : 0),
+      paymentStatus: sale.paymentStatus,
+      saleDate: sale.billDate || sale.createdAt,
+      billNumber: sale.billNumber,
       createdAt: sale.createdAt,
       updatedAt: sale.updatedAt
     }));
@@ -197,19 +296,21 @@ exports.getSaleById = async (req, res, next) => {
 // Get list of due bills (for user dashboard or admin)
 exports.getDueBills = async (req, res, next) => {
     try {
-        const now = new Date();
-        now.setHours(0, 0, 0, 0); // Start of day for comparison
+        const now = today();
 
         const dueBills = await Sale.aggregate([
-            { $match: { paymentMethod: 'credit', dueDate: { $gte: now } } }, // Due today or in the future
+            { $match: { ...OPEN_BILL_MATCH, dueDate: { $gte: now } } }, // Due today or in the future
             { $lookup: { from: 'customers', localField: 'customer', foreignField: '_id', as: 'customerInfo' } },
             { $unwind: '$customerInfo' },
             { $project: { // Select only needed fields
                 _id: 1, 
                 customerId: '$customer',
                 totalAmount: 1, 
+                balanceDue: BALANCE_EXPR,
                 dueDate: 1, 
                 createdAt: 1,
+                saleDate: { $ifNull: ['$billDate', '$createdAt'] },
+                billNumber: 1,
                 customerName: '$customerInfo.name'
             }},
             { $sort: { dueDate: 1 } }
@@ -224,19 +325,21 @@ exports.getDueBills = async (req, res, next) => {
 // Get list of overdue credit bills
 exports.getOverdueBills = async (req, res, next) => {
     try {
-        const now = new Date();
-        now.setHours(0, 0, 0, 0); // Start of day for comparison
+        const now = today();
 
         const overdueBills = await Sale.aggregate([
-            { $match: { paymentMethod: 'credit', dueDate: { $lt: now } } }, // Due before today
+            { $match: { ...OPEN_BILL_MATCH, dueDate: { $lt: now } } }, // Due before today
             { $lookup: { from: 'customers', localField: 'customer', foreignField: '_id', as: 'customerInfo' } },
             { $unwind: '$customerInfo' },
             { $project: {
                 _id: 1, 
                 customerId: '$customer',
                 totalAmount: 1, 
+                balanceDue: BALANCE_EXPR,
                 dueDate: 1, 
                 createdAt: 1,
+                saleDate: { $ifNull: ['$billDate', '$createdAt'] },
+                billNumber: 1,
                 customerName: '$customerInfo.name'
             }},
             { $sort: { dueDate: 1 } }

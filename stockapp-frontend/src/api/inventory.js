@@ -48,3 +48,8 @@ export const transferInventory = async (transferData) => {
     throw error;
   }
 };
+
+export const addInventoryItem = async (itemData) => {
+  const response = await apiClient.post('/admin/inventory', itemData);
+  return response.data.data;
+};

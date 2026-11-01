@@ -1,268 +1,95 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { Receipt, Search } from 'lucide-react';
 import { fetchDueBills, fetchOverdueBills } from '../api/sales';
-import { useAuth } from '../context/AuthContext';
+import { Alert, Badge, Button, Card, EmptyState, Input, PageHeader, PageLoading, Stat, Table, Td, Th, useToast } from '../components/ui';
+import CollectPaymentModal from '../components/sales/CollectPaymentModal';
+import { apiError, daysFromToday, formatDay, money, plural } from '../utils/format';
+
+const FILTERS = [['all', 'All'], ['overdue', 'Overdue'], ['week', 'Due in 7 days']];
+
+const dueBadge = (days) => {
+  if (days < 0) return <Badge tone="danger">{plural(-days, 'day')} overdue</Badge>;
+  if (days === 0) return <Badge tone="warning">Due today</Badge>;
+  return <Badge tone={days <= 7 ? 'warning' : 'neutral'}>{plural(days, 'day')} left</Badge>;
+};
 
 const CreditBillsPage = () => {
-  const { currentUser, logout } = useAuth();
-  const [dueBills, setDueBills] = useState([]);
-  const [overdueBills, setOverdueBills] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const toast = useToast();
+  const [bills, setBills] = useState(null);
   const [error, setError] = useState('');
+  const [filter, setFilter] = useState('all');
+  const [search, setSearch] = useState('');
+  const [collecting, setCollecting] = useState(null);
 
-  useEffect(() => {
-    fetchBills();
+  const load = useCallback(async () => {
+    try {
+      const [due, overdue] = await Promise.all([fetchDueBills(), fetchOverdueBills()]);
+      setBills([...overdue, ...due]);
+    } catch (err) {
+      setError(apiError(err, 'Could not load credit bills.'));
+    }
   }, []);
 
-  const fetchBills = async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const [due, overdue] = await Promise.all([
-        fetchDueBills(),
-        fetchOverdueBills()
-      ]);
-      setDueBills(due);
-      setOverdueBills(overdue);
-    } catch (err) {
-      console.error('Error fetching credit bills:', err);
-      setError('Failed to load credit bills. Please try again.');
-    } finally {
-      setLoading(false);
-    }
-  };
+  useEffect(() => { load(); }, [load]);
 
-  const calculateDaysOverdue = (dueDate) => {
-    const today = new Date();
-    const due = new Date(dueDate);
-    const diffTime = today - due;
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    return diffDays > 0 ? diffDays : 0;
-  };
+  if (error && !bills) return <><PageHeader title="Credit bills" /><Alert>{error}</Alert></>;
+  if (!bills) return <><PageHeader title="Credit bills" /><PageLoading /></>;
 
-  const calculateDaysUntilDue = (dueDate) => {
-    const today = new Date();
-    const due = new Date(dueDate);
-    const diffTime = due - today;
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    return diffDays > 0 ? diffDays : 0;
-  };
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-gray-50 flex justify-center items-center">
-        <div className="text-xl">Loading credit bills...</div>
-      </div>
-    );
-  }
-
-  const totalDueAmount = dueBills.reduce((sum, bill) => sum + (bill.totalAmount || 0), 0);
-  const totalOverdueAmount = overdueBills.reduce((sum, bill) => sum + (bill.totalAmount || 0), 0);
-  const totalOutstanding = totalDueAmount + totalOverdueAmount;
+  const total = (rows) => rows.reduce((sum, bill) => sum + (bill.balanceDue || 0), 0);
+  const overdue = bills.filter((bill) => daysFromToday(bill.dueDate) < 0);
+  const week = bills.filter((bill) => { const d = daysFromToday(bill.dueDate); return d >= 0 && d <= 7; });
+  const shown = (filter === 'overdue' ? overdue : filter === 'week' ? week : bills)
+    .filter((bill) => bill.customerName?.toLowerCase().includes(search.trim().toLowerCase()));
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <nav className="bg-white shadow">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex justify-between h-16 items-center">
-            <h1 className="text-2xl font-bold text-gray-900">Credit Bills Management</h1>
-            <div className="flex items-center space-x-4">
-              <span className="text-gray-700">Welcome, {currentUser?.username}</span>
-              <button
-                onClick={logout}
-                className="bg-red-600 hover:bg-red-700 text-white px-4 py-2 rounded-md text-sm font-medium"
-              >
-                Logout
-              </button>
-            </div>
-          </div>
+    <>
+      <PageHeader title="Credit bills" subtitle="Bills are due 21 days after the bill date unless you set another." />
+      <div className="mb-6 grid gap-3 sm:grid-cols-3">
+        <Stat label="To collect" value={money(total(bills))} note={plural(bills.length, 'open bill')} />
+        <Stat label="Overdue" value={money(total(overdue))} note={plural(overdue.length, 'bill')} tone={overdue.length ? 'danger' : 'default'} />
+        <Stat label="Due in 7 days" value={money(total(week))} note={plural(week.length, 'bill')} tone={week.length ? 'warning' : 'default'} />
+      </div>
+      <div className="mb-3 flex flex-wrap items-center gap-3">
+        <div className="inline-flex rounded-lg border border-slate-300 bg-white p-0.5" role="group" aria-label="Filter bills">
+          {FILTERS.map(([key, label]) => (
+            <button key={key} type="button" aria-pressed={filter === key} onClick={() => setFilter(key)} className={`rounded-md px-3 py-1.5 text-sm font-medium ${filter === key ? 'bg-brand-600 text-white' : 'text-slate-600 hover:bg-slate-100'}`}>{label}</button>
+          ))}
         </div>
-      </nav>
-
-      <div className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
-        <div className="px-4 py-6 sm:px-0">
-          {error && (
-            <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-6">
-              {error}
-            </div>
-          )}
-
-          {/* Stats Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
-            <div className="bg-gradient-to-br from-yellow-50 to-yellow-100 overflow-hidden shadow-lg rounded-xl border-l-4 border-yellow-500 hover:shadow-xl transition-shadow duration-200">
-              <div className="p-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-semibold text-yellow-600 uppercase tracking-wide">Due Soon</p>
-                    <p className="text-3xl font-bold text-gray-900 mt-2">{dueBills.length} bills</p>
-                    <p className="text-sm font-semibold text-gray-700 mt-1">${totalDueAmount.toFixed(2)}</p>
-                  </div>
-                  <div className="h-14 w-14 bg-yellow-500 rounded-xl flex items-center justify-center shadow-md">
-                    <span className="text-2xl">📅</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div className="bg-gradient-to-br from-red-50 to-red-100 overflow-hidden shadow-lg rounded-xl border-l-4 border-red-500 hover:shadow-xl transition-shadow duration-200">
-              <div className="p-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-semibold text-red-600 uppercase tracking-wide">Overdue</p>
-                    <p className="text-3xl font-bold text-red-900 mt-2">{overdueBills.length} bills</p>
-                    <p className="text-sm font-semibold text-red-700 mt-1">${totalOverdueAmount.toFixed(2)}</p>
-                  </div>
-                  <div className="h-14 w-14 bg-red-500 rounded-xl flex items-center justify-center shadow-md">
-                    <span className="text-2xl">⚠️</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-            <div className="bg-gradient-to-br from-blue-50 to-blue-100 overflow-hidden shadow-lg rounded-xl border-l-4 border-blue-500 hover:shadow-xl transition-shadow duration-200">
-              <div className="p-6">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-semibold text-blue-600 uppercase tracking-wide">Total Outstanding</p>
-                    <p className="text-3xl font-bold text-gray-900 mt-2">${totalOutstanding.toFixed(2)}</p>
-                    <p className="text-sm font-semibold text-gray-700 mt-1">{(dueBills.length + overdueBills.length)} total bills</p>
-                  </div>
-                  <div className="h-14 w-14 bg-blue-500 rounded-xl flex items-center justify-center shadow-md">
-                    <span className="text-2xl">💰</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Overdue Bills Section */}
-          <div className="bg-white shadow-lg rounded-xl mb-8 overflow-hidden border border-gray-100">
-            <div className="px-6 py-5 bg-gradient-to-r from-red-50 to-red-100 border-b-2 border-red-300">
-              <h2 className="text-2xl font-bold text-red-900">
-                Overdue Bills <span className="text-lg font-semibold">({overdueBills.length})</span>
-              </h2>
-            </div>
-            <div className="overflow-x-auto">
-              {overdueBills.length === 0 ? (
-                <div className="p-12 text-center">
-                  <div className="flex flex-col items-center justify-center">
-                    <span className="text-5xl mb-4">✅</span>
-                    <p className="text-lg font-semibold text-gray-700">No overdue bills. Great job!</p>
-                  </div>
-                </div>
-              ) : (
-                <table className="min-w-full divide-y divide-gray-200">
-                  <thead className="bg-red-100">
-                    <tr>
-                      <th className="px-6 py-4 text-left text-xs font-bold text-red-800 uppercase tracking-wider">
-                        Customer
-                      </th>
-                      <th className="px-6 py-4 text-left text-xs font-bold text-red-800 uppercase tracking-wider">
-                        Amount
-                      </th>
-                      <th className="px-6 py-4 text-left text-xs font-bold text-red-800 uppercase tracking-wider">
-                        Due Date
-                      </th>
-                      <th className="px-6 py-4 text-left text-xs font-bold text-red-800 uppercase tracking-wider">
-                        Days Overdue
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
-                    {overdueBills.map((bill) => {
-                      const daysOverdue = calculateDaysOverdue(bill.dueDate);
-                      return (
-                        <tr key={bill._id} className="hover:bg-red-50 transition-colors duration-150">
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <div className="text-sm font-bold text-red-900">{bill.customerName || 'N/A'}</div>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <div className="text-sm font-bold text-red-700">${(bill.totalAmount || 0).toFixed(2)}</div>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <div className="text-sm font-medium text-red-700">
-                              {new Date(bill.dueDate).toLocaleDateString()}
-                            </div>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <span className="px-3 py-1.5 text-xs font-bold rounded-full bg-red-200 text-red-900 border border-red-300">
-                              {daysOverdue} day{daysOverdue !== 1 ? 's' : ''}
-                            </span>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </div>
-
-          {/* Due Bills Section */}
-          <div className="bg-white shadow-lg rounded-xl overflow-hidden border border-gray-100">
-            <div className="px-6 py-5 bg-gradient-to-r from-yellow-50 to-yellow-100 border-b-2 border-yellow-300">
-              <h2 className="text-2xl font-bold text-yellow-900">
-                Due Soon <span className="text-lg font-semibold">({dueBills.length})</span>
-              </h2>
-            </div>
-            <div className="overflow-x-auto">
-              {dueBills.length === 0 ? (
-                <div className="p-12 text-center">
-                  <div className="flex flex-col items-center justify-center">
-                    <span className="text-5xl mb-4">📅</span>
-                    <p className="text-lg font-semibold text-gray-700">No bills due soon.</p>
-                  </div>
-                </div>
-              ) : (
-                <table className="min-w-full divide-y divide-gray-200">
-                  <thead className="bg-yellow-100">
-                    <tr>
-                      <th className="px-6 py-4 text-left text-xs font-bold text-yellow-800 uppercase tracking-wider">
-                        Customer
-                      </th>
-                      <th className="px-6 py-4 text-left text-xs font-bold text-yellow-800 uppercase tracking-wider">
-                        Amount
-                      </th>
-                      <th className="px-6 py-4 text-left text-xs font-bold text-yellow-800 uppercase tracking-wider">
-                        Due Date
-                      </th>
-                      <th className="px-6 py-4 text-left text-xs font-bold text-yellow-800 uppercase tracking-wider">
-                        Days Until Due
-                      </th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
-                    {dueBills.map((bill) => {
-                      const daysUntilDue = calculateDaysUntilDue(bill.dueDate);
-                      return (
-                        <tr key={bill._id} className="hover:bg-yellow-50 transition-colors duration-150">
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <div className="text-sm font-bold text-yellow-900">{bill.customerName || 'N/A'}</div>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <div className="text-sm font-bold text-yellow-700">${(bill.totalAmount || 0).toFixed(2)}</div>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <div className="text-sm font-medium text-yellow-700">
-                              {new Date(bill.dueDate).toLocaleDateString()}
-                            </div>
-                          </td>
-                          <td className="px-6 py-4 whitespace-nowrap">
-                            <span className="px-3 py-1.5 text-xs font-bold rounded-full bg-yellow-200 text-yellow-900 border border-yellow-300">
-                              {daysUntilDue} day{daysUntilDue !== 1 ? 's' : ''}
-                            </span>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              )}
-            </div>
-          </div>
+        <div className="relative min-w-[200px] flex-1 sm:max-w-xs">
+          <Search className="absolute left-3 top-3 h-4 w-4 text-slate-400" aria-hidden="true" />
+          <Input className="pl-9" placeholder="Search customer" aria-label="Search customer" value={search} onChange={(e) => setSearch(e.target.value)} />
         </div>
       </div>
-    </div>
+      <Card flush>
+        {shown.length === 0 ? (
+          <EmptyState icon={Receipt} title={bills.length ? 'No bills match' : 'No open credit bills'}>{bills.length ? 'Try another filter.' : 'Credit sales you enter will appear here.'}</EmptyState>
+        ) : (
+          <Table>
+            <thead><tr><Th>Customer</Th><Th>Sale date</Th><Th>Due date</Th><Th>Status</Th><Th align="right">Balance</Th><Th align="right"><span className="sr-only">Action</span></Th></tr></thead>
+            <tbody>
+              {shown.map((bill) => (
+                <tr key={bill._id} className="hover:bg-slate-50">
+                  <Td className="font-medium">{bill.customerName}</Td>
+                  <Td className="whitespace-nowrap text-slate-600">{formatDay(bill.saleDate || bill.createdAt)}</Td>
+                  <Td className="whitespace-nowrap text-slate-600">{formatDay(bill.dueDate)}</Td>
+                  <Td>{dueBadge(daysFromToday(bill.dueDate))}</Td>
+                  <Td align="right" className="font-medium">{money(bill.balanceDue)}</Td>
+                  <Td align="right"><Button size="sm" onClick={() => setCollecting(bill)}>Collect</Button></Td>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        )}
+      </Card>
+      {collecting && (
+        <CollectPaymentModal
+          bill={collecting}
+          onClose={() => setCollecting(null)}
+          onCollected={() => { setCollecting(null); toast('Payment recorded.'); load(); }}
+        />
+      )}
+    </>
   );
 };
 
 export default CreditBillsPage;
-

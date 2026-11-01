@@ -1,9 +1,6 @@
 // routes/adminRoutes.js
 const express = require('express');
 const {
-  getUsers,
-  updateUserRole,
-  deleteUser,
   // getInventory is likely in inventoryRoutes, not here if split
   addInventoryItem,
 } = require('../controllers/adminController');
@@ -16,16 +13,8 @@ const {
   getLocations
 } = require('../controllers/inventoryController');
 
-const { protect, authorize } = require('../middleware/authMiddleware');
 
 const router = express.Router();
-router.use(protect);
-router.use(authorize('admin'));
-
-// --- User Management Routes ---
-router.get('/users', getUsers);
-router.put('/users/:userId/role', updateUserRole);
-router.delete('/users/:userId', deleteUser);
 
 // --- Inventory Management Routes ---
 // GET /api/admin/inventory - Get all inventory items across all locations

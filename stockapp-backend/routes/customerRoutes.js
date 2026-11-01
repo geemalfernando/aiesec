@@ -8,19 +8,15 @@ const {
   deleteCustomer, // Ensure this is imported
 } = require('../controllers/customerController');
 
-const { protect, authorize } = require('../middleware/authMiddleware');
 
 const router = express.Router();
 
-router.use(protect);
 
-// Users need to view and add customers for sales
-router.get('/', authorize('admin', 'user'), getCustomers);
-router.post('/', authorize('admin', 'user'), addCustomer);
-router.get('/:customerId', authorize('admin', 'user'), getCustomerById);
+router.get('/', getCustomers);
+router.post('/', addCustomer);
+router.get('/:customerId', getCustomerById);
 
-// Only admins can update or delete customers
-router.put('/:customerId', authorize('admin'), updateCustomer);
-router.delete('/:customerId', authorize('admin'), deleteCustomer);
+router.put('/:customerId', updateCustomer);
+router.delete('/:customerId', deleteCustomer);
 
 module.exports = router;

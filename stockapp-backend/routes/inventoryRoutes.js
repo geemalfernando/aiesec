@@ -7,17 +7,15 @@ const {
   getLocations
 } = require('../controllers/inventoryController');
 
-const { protect, authorize } = require('../middleware/authMiddleware');
 
 const router = express.Router();
-router.use(protect);
 
 // Users need access to locations and viewing inventory for sales
-router.get('/locations', authorize('admin', 'user'), getLocations);
-router.get('/', authorize('admin', 'user'), getAllInventory);
-router.get('/:location', authorize('admin', 'user'), getInventoryByLocation);
+router.get('/locations', getLocations);
+router.get('/', getAllInventory);
+router.get('/:location', getInventoryByLocation);
 
 // Only admins can transfer inventory
-router.post('/transfer', authorize('admin'), transferInventory);
+router.post('/transfer', transferInventory);
 
 module.exports = router;
