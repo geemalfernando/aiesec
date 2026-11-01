@@ -20,7 +20,7 @@ exports.getCustomers = async (req, res, next) => {
 
 exports.addCustomer = async (req, res, next) => {
   try {
-    let { name, email, phone, customerType = 'cash', creditDays } = req.body;
+    let { name, email, phone, customerType = 'cash', creditDays, address, outletId } = req.body;
 
     if (!name) {
       const error = new Error('Customer name is required.');
@@ -42,7 +42,7 @@ exports.addCustomer = async (req, res, next) => {
       }
     }
 
-    const newCustomer = await Customer.create({ name, email, phone, customerType, creditDays });
+    const newCustomer = await Customer.create({ name, email, phone, customerType, creditDays, address, outletId });
     res.status(201).json({
       success: true,
       data: newCustomer,
@@ -73,7 +73,7 @@ exports.getCustomerById = async (req, res, next) => {
 exports.updateCustomer = async (req, res, next) => {
   try {
     const { customerId } = req.params;
-    let { name, email, phone, customerType, creditDays } = req.body;
+    let { name, email, phone, customerType, creditDays, address, outletId } = req.body;
 
     if (!name) {
       const error = new Error('Customer name is required.');
@@ -99,6 +99,8 @@ exports.updateCustomer = async (req, res, next) => {
     if (phone !== undefined) updateData.phone = phone;
     if (customerType !== undefined) updateData.customerType = customerType;
     if (creditDays !== undefined) updateData.creditDays = creditDays;
+    if (address !== undefined) updateData.address = address;
+    if (outletId !== undefined) updateData.outletId = outletId;
 
     const updatedCustomer = await Customer.findByIdAndUpdate(customerId, updateData, {
       new: true,

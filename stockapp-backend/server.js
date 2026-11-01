@@ -7,8 +7,6 @@ require('dotenv').config();
 const connectDB = require('./config/db');
 
 // Import all route files
-const authRoutes = require('./routes/authRoutes'); // Assuming these exist and handle user registration/login
-const userRoutes = require('./routes/userRoutes'); // Assuming these exist for general user operations
 const adminRoutes = require('./routes/adminRoutes'); // This is the new/updated admin route file
 const customerRoutes = require('./routes/customerRoutes'); // NEW: Import customer routes
 const salesRoutes = require('./routes/salesRoutes');     // NEW: Import sales routes
@@ -29,7 +27,8 @@ app.use((req, res, next) => {
 
 // 2. CORS Middleware
 // Enables cross-origin requests from your frontend application.
-app.use(cors());
+// There is no login, so only the app itself may call this API from a browser.
+app.use(cors({ origin: process.env.CORS_ORIGIN || 'http://localhost:3000' }));
 
 // 3. Body Parsers
 // These built-in Express middlewares parse incoming request bodies.
@@ -39,8 +38,6 @@ app.use(express.urlencoded({ extended: true })); // For parsing application/x-ww
 
 // --- Routes ---
 // Mount all your API routes.
-app.use('/api/auth', authRoutes);
-app.use('/api/users', userRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/customers', customerRoutes); // Mount customer routes
 app.use('/api/sales', salesRoutes);     // Mount sales routes
@@ -75,8 +72,10 @@ app.use((err, req, res, next) => {
 // --- Server Configuration ---
 // Get the port from environment variables or default to 5001
 const PORT = process.env.PORT || 5001;
+// There is no login, so by default only this computer can reach the API.
+const HOST = process.env.HOST || '127.0.0.1';
 
-const server = app.listen(PORT, () => {
+const server = app.listen(PORT, HOST, () => {
   console.log(`Server running in ${process.env.NODE_ENV || 'development'} mode on port ${PORT}`);
 });
 

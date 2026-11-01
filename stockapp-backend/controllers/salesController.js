@@ -8,12 +8,60 @@ const { today, addDays, parseDay } = require('../utils/businessDate');
 const { OPEN_BILL_MATCH, BALANCE_EXPR, refreshStatus } = require('../utils/billing');
 const mongoose = require('mongoose');
 
+// A bill records what already happened, so its lines may create new stock items
+// (saved with their MRP) or add the stock the system was missing.
+const prepareBillLines = async (items, session) => {
+  if (!Array.isArray(items)) return;
+  for (const item of items) {
+    if (!item.newItem) continue;
+    const name = String(item.name || '').trim();
+    if (!name || !item.locationTakenFrom) {
+      const error = new Error('Each new item needs a name and a location.');
+      error.statusCode = 400; throw error;
+    }
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    let stock = await InventoryItem.findOne({ name: new RegExp(`^${escaped}$`, 'i'), location: item.locationTakenFrom }).session(session);
+    if (!stock) {
+      [stock] = await InventoryItem.create([{
+        name,
+        price: item.priceAtSale > 0 ? item.priceAtSale : 0,
+        mrp: item.mrp ?? undefined,
+        quantity: 0,
+        cases: 0,
+        pieces: 0,
+        piecesPerCase: item.piecesPerCase,
+        location: item.locationTakenFrom,
+      }], { session });
+    }
+    item.itemId = String(stock._id);
+    if (item.priceAtSale > 0 && stock.price === 0) {
+      stock.price = item.priceAtSale;
+      await stock.save({ session });
+    }
+  }
+
+  const needed = new Map();
+  items.filter((item) => item.topUp).forEach((item) => {
+    const quantity = item.cases * item.piecesPerCase + item.pieces;
+    needed.set(item.itemId, (needed.get(item.itemId) || 0) + quantity);
+  });
+  for (const [itemId, quantity] of needed) {
+    const stock = await InventoryItem.findById(itemId).session(session);
+    if (stock && stock.quantity < quantity) {
+      stock.quantity = quantity;
+      stock.cases = Math.floor(quantity / stock.piecesPerCase);
+      stock.pieces = quantity % stock.piecesPerCase;
+      await stock.save({ session });
+    }
+  }
+};
+
 exports.recordSale = async (req, res, next) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
-    const { customerId, items, discountAmount, discountPercentage, paymentMethod, dueDate, cheque } = req.body;
+    const { customerId, items, discountAmount, discountPercentage, paymentMethod, dueDate, cheque, billNumber, billDate } = req.body;
 
     // --- Input Validation ---
     if (!customerId || !items || !Array.isArray(items) || items.length === 0 || !paymentMethod) {
@@ -33,12 +81,19 @@ exports.recordSale = async (req, res, next) => {
       error.statusCode = 400; throw error;
     }
 
+    if (billNumber && await Sale.exists({ billNumber: String(billNumber).trim() }).session(session)) {
+      const error = new Error(`Bill ${billNumber} has already been entered.`);
+      error.statusCode = 409; throw error;
+    }
+
+    await prepareBillLines(items, session);
+
     // --- Item Validation and Price Calculation ---
     let calculatedTotalAmount = 0;
     const saleItemsData = [];
 
     for (const item of items) {
-      const { itemId, cases, pieces, piecesPerCase, locationTakenFrom } = item;
+      const { itemId, cases, pieces, piecesPerCase, locationTakenFrom, priceAtSale } = item;
       const quantity = (cases * piecesPerCase) + pieces;
 
       if (!itemId || cases === undefined || pieces === undefined || piecesPerCase === undefined || quantity < 1 || !locationTakenFrom) {
@@ -67,10 +122,17 @@ exports.recordSale = async (req, res, next) => {
         error.statusCode = 400; throw error;
       }
 
-      const itemPrice = inventoryItem.price;
+      // The rate on the bill can differ from the stock price, and free items are 0.
+      const itemPrice = Number.isFinite(priceAtSale) && priceAtSale >= 0 ? priceAtSale : inventoryItem.price;
       const itemSubtotal = itemPrice * quantity;
 
+      if (item.mrp !== undefined && item.mrp !== null && item.mrp !== inventoryItem.mrp) {
+        inventoryItem.mrp = item.mrp;
+        await inventoryItem.save({ session });
+      }
+
       saleItemsData.push({
+        mrp: inventoryItem.mrp,
         itemId: itemId,
         name: inventoryItem.name,
         quantity: quantity,
@@ -90,7 +152,8 @@ exports.recordSale = async (req, res, next) => {
     finalTotal = Math.max(0, finalTotal);
 
     // --- Update Inventory Stock ---
-    const updateStockPromises = items.map(async (item) => {
+    // One at a time: a sale can have the same stock twice, as a paid and a free line.
+    for (const item of items) {
       const soldQuantity = (item.cases * item.piecesPerCase) + item.pieces;
       const inventoryItem = await InventoryItem.findOne({ _id: item.itemId, location: item.locationTakenFrom }).session(session);
 
@@ -99,16 +162,19 @@ exports.recordSale = async (req, res, next) => {
         error.statusCode = 404; throw error;
       }
 
+      if (inventoryItem.quantity < soldQuantity) {
+        const error = new Error(`Insufficient stock at "${item.locationTakenFrom}" for item "${inventoryItem.name}". Available: ${inventoryItem.quantity}, Requested: ${soldQuantity}`);
+        error.statusCode = 400; throw error;
+      }
       inventoryItem.quantity -= soldQuantity;
       inventoryItem.cases = Math.floor(inventoryItem.quantity / inventoryItem.piecesPerCase);
       inventoryItem.pieces = inventoryItem.quantity % inventoryItem.piecesPerCase;
       await inventoryItem.save({ session });
-    });
-    await Promise.all(updateStockPromises);
+    }
 
     // --- Create the sale record ---
     const billDueDate = paymentMethod === 'credit'
-      ? (dueDate ? parseDay(dueDate) : addDays(today(), customer.creditDays))
+      ? (dueDate ? parseDay(dueDate) : addDays(billDate ? parseDay(billDate) : today(), customer.creditDays))
       : chequeData?.chequeDate; // If a sale's cheque bounces, the bill is already due
     const newSale = await Sale.create([{
       customer: customerId,
@@ -118,10 +184,11 @@ exports.recordSale = async (req, res, next) => {
       discountPercentage: discountPercentage || 0,
       paymentMethod: paymentMethod,
       dueDate: billDueDate,
+      ...(billNumber && { billNumber: String(billNumber).trim() }),
+      ...(billDate && { billDate: parseDay(billDate) }),
       amountPaid: paymentMethod === 'cash' ? finalTotal : 0,
       pendingChequeAmount: paymentMethod === 'cheque' ? finalTotal : 0,
       balanceDue: paymentMethod === 'credit' ? finalTotal : 0,
-      // salesPerson: req.user.id,
     }], { session: session });
 
     refreshStatus(newSale[0]);
@@ -137,7 +204,6 @@ exports.recordSale = async (req, res, next) => {
         method: 'cheque',
         amount: finalTotal,
         allocations: [{ sale: newSale[0]._id, amount: finalTotal }],
-        recordedBy: req.user._id,
         ...chequeData,
       }], { session });
     }
@@ -195,7 +261,8 @@ exports.getSales = async (req, res, next) => {
       pendingChequeAmount: sale.pendingChequeAmount,
       balanceDue: sale.balanceDue ?? (sale.paymentMethod === 'credit' ? sale.totalAmount : 0),
       paymentStatus: sale.paymentStatus,
-      saleDate: sale.createdAt,
+      saleDate: sale.billDate || sale.createdAt,
+      billNumber: sale.billNumber,
       createdAt: sale.createdAt,
       updatedAt: sale.updatedAt
     }));
@@ -242,6 +309,8 @@ exports.getDueBills = async (req, res, next) => {
                 balanceDue: BALANCE_EXPR,
                 dueDate: 1, 
                 createdAt: 1,
+                saleDate: { $ifNull: ['$billDate', '$createdAt'] },
+                billNumber: 1,
                 customerName: '$customerInfo.name'
             }},
             { $sort: { dueDate: 1 } }
@@ -269,6 +338,8 @@ exports.getOverdueBills = async (req, res, next) => {
                 balanceDue: BALANCE_EXPR,
                 dueDate: 1, 
                 createdAt: 1,
+                saleDate: { $ifNull: ['$billDate', '$createdAt'] },
+                billNumber: 1,
                 customerName: '$customerInfo.name'
             }},
             { $sort: { dueDate: 1 } }

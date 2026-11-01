@@ -11,7 +11,6 @@ const PaymentSchema = new mongoose.Schema({
   method: { type: String, enum: ['cash', 'cheque'], required: true },
   amount: { type: Number, required: true, min: 0.01 },
   allocations: { type: [AllocationSchema], default: [] },
-  recordedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   // Cheque details (method === 'cheque' only)
   chequeNumber: { type: String, trim: true },
   bankName: { type: String, trim: true },

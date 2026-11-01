@@ -31,6 +31,10 @@ const SaleItemSchema = new mongoose.Schema({
     required: true,
     min: 1,
   },
+  mrp: {
+    type: Number,
+    min: 0,
+  },
   priceAtSale: {
     type: Number,
     required: true,
@@ -78,6 +82,13 @@ const SaleSchema = new mongoose.Schema({
     type: Date,
     // Validation for 'required' if paymentMethod is 'credit' will be in controller
   },
+  billNumber: { // Serial number printed on the paper bill
+    type: String,
+    trim: true,
+  },
+  billDate: { // The day on the paper bill, when it differs from the day it was entered
+    type: Date,
+  },
   amountPaid: { // Cash received plus cheques that have cleared
     type: Number,
     default: 0,
@@ -96,7 +107,6 @@ const SaleSchema = new mongoose.Schema({
     type: String,
     enum: ['unpaid', 'partial', 'cheque_pending', 'paid'],
   },
-  // salesPerson: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // Optional
 }, {
   timestamps: true
 });

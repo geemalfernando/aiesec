@@ -58,7 +58,7 @@ exports.recordPayment = async (req, res, next) => {
     }
 
     const [payment] = await Payment.create([{
-      customer: customerId, method, amount, allocations, recordedBy: req.user._id, ...cheque,
+      customer: customerId, method, amount, allocations, ...cheque,
     }], { session });
 
     await session.commitTransaction();

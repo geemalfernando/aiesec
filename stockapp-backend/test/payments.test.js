@@ -2,26 +2,22 @@
 const { test, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const express = require('express');
-const jwt = require('jsonwebtoken');
 const mongoose = require('mongoose');
 const { MongoMemoryReplSet } = require('mongodb-memory-server');
 
-process.env.JWT_SECRET = 'test-secret';
-
-const User = require('../models/User');
 const Customer = require('../models/Customer');
 const InventoryItem = require('../models/InventoryItem');
 const Sale = require('../models/Sale');
 const Payment = require('../models/Payment');
 const { today, addDays } = require('../utils/businessDate');
 
-let mongod, server, base, adminToken, userToken, item;
+let mongod, server, base, item;
 const day = (offset) => addDays(today(), offset).toISOString().slice(0, 10);
 
-const call = async (method, path, body, token = adminToken) => {
+const call = async (method, path, body) => {
   const res = await fetch(base + path, {
     method,
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    headers: { 'Content-Type': 'application/json' },
     body: body && JSON.stringify(body),
   });
   return { status: res.status, body: await res.json() };
@@ -49,7 +45,7 @@ before(async () => {
   app.use((err, req, res, next) => res.status(err.statusCode || 500).json({ success: false, message: err.message }));
   server = app.listen(0);
   base = `http://127.0.0.1:${server.address().port}`;
-  for (const model of [Sale, Payment, Customer, InventoryItem, User]) await model.createCollection();
+  for (const model of [Sale, Payment, Customer, InventoryItem]) await model.createCollection();
   await Payment.syncIndexes();
 });
 
@@ -61,11 +57,7 @@ after(async () => {
 
 let credit, cash;
 beforeEach(async () => {
-  await Promise.all([Sale, Payment, Customer, InventoryItem, User].map((m) => m.deleteMany({})));
-  const admin = await User.collection.insertOne({ username: 'a', email: 'a@x.lk', password: 'x', role: 'admin' });
-  const user = await User.collection.insertOne({ username: 'u', email: 'u@x.lk', password: 'x', role: 'user' });
-  adminToken = jwt.sign({ id: admin.insertedId }, process.env.JWT_SECRET);
-  userToken = jwt.sign({ id: user.insertedId }, process.env.JWT_SECRET);
+  await Promise.all([Sale, Payment, Customer, InventoryItem].map((m) => m.deleteMany({})));
   item = await InventoryItem.create({ name: 'Soap', price: 100, quantity: 1000, cases: 100, pieces: 0, piecesPerCase: 10, location: 'storeA' });
   credit = await Customer.create({ name: 'Credit Shop', customerType: 'credit' });
   cash = await Customer.create({ name: 'Cash Shop', customerType: 'cash' });
@@ -208,13 +200,81 @@ test('bills from before payments existed count as fully owed and can be paid', a
   assert.equal((await Sale.findById(insertedId)).paymentStatus, 'paid');
 });
 
-test('staff can collect, but only an admin can change a cheque status', async () => {
-  await sell(credit, 'credit');
-  const paid = await call('POST', '/api/payments',
-    { customerId: credit._id, method: 'cheque', amount: 100, ...cheque('300') }, userToken);
-  assert.equal(paid.status, 201);
-  const res = await call('PATCH', `/api/payments/cheques/${paid.body.data._id}/status`, { status: 'deposited' }, userToken);
-  assert.equal(res.status, 403);
+test('pages work without any login', async () => {
+  const res = await fetch(`${base}/api/payments/cheques`);
+  assert.equal(res.status, 200);
+});
+
+test('a bill keeps its own rate, and a free line of the same stock takes stock too', async () => {
+  const line = { itemId: item._id, cases: 0, piecesPerCase: 10, locationTakenFrom: 'storeA' };
+  const { status, body } = await call('POST', '/api/sales/entry', {
+    customerId: credit._id,
+    paymentMethod: 'credit',
+    items: [{ ...line, pieces: 5, priceAtSale: 90 }, { ...line, pieces: 3, priceAtSale: 0 }],
+  });
+  assert.equal(status, 201);
+  assert.equal(body.data.totalAmount, 450);
+  assert.equal((await InventoryItem.findById(item._id)).quantity, 992);
+});
+
+test('paid and free lines together cannot exceed the stock', async () => {
+  await InventoryItem.updateOne({ _id: item._id }, { quantity: 6 });
+  const line = { itemId: item._id, cases: 0, piecesPerCase: 10, locationTakenFrom: 'storeA' };
+  const { status } = await call('POST', '/api/sales/entry', {
+    customerId: credit._id,
+    paymentMethod: 'cash',
+    items: [{ ...line, pieces: 5, priceAtSale: 90 }, { ...line, pieces: 3, priceAtSale: 0 }],
+  });
+  assert.equal(status, 400);
+  assert.equal((await InventoryItem.findById(item._id)).quantity, 6);
+});
+
+test('the same bill number cannot be entered twice', async () => {
+  assert.equal((await sell(credit, 'credit', { billNumber: '45098' })).status, 201);
+  assert.equal((await sell(credit, 'credit', { billNumber: '45098' })).status, 409);
+  assert.equal((await InventoryItem.findById(item._id)).quantity, 990);
+});
+
+test('21 days count from the bill date', async () => {
+  const { body } = await sell(credit, 'credit', { billDate: '2026-10-26' });
+  assert.equal(body.data.dueDate.slice(0, 10), '2026-11-16');
+});
+
+test('a bill creates new items with MRP and pack size, for paid and free lines', async () => {
+  const line = { name: 'Sera Table Salt 400g', newItem: true, topUp: true, mrp: 120, cases: 1, pieces: 0, piecesPerCase: 22, locationTakenFrom: 'storeB' };
+  const { status, body } = await call('POST', '/api/sales/entry', {
+    customerId: credit._id,
+    paymentMethod: 'credit',
+    items: [{ ...line, priceAtSale: 90 }, { ...line, cases: 0, pieces: 3, priceAtSale: 0 }],
+  });
+  assert.equal(status, 201);
+  assert.equal(body.data.totalAmount, 1980);
+  assert.equal(body.data.items[0].mrp, 120);
+  const saved = await InventoryItem.find({ name: 'Sera Table Salt 400g' });
+  assert.equal(saved.length, 1);
+  assert.deepEqual([saved[0].mrp, saved[0].price, saved[0].piecesPerCase, saved[0].quantity], [120, 90, 22, 0]);
+});
+
+test('a bill line adds missing stock and updates the MRP of a known item', async () => {
+  await InventoryItem.updateOne({ _id: item._id }, { quantity: 6, cases: 0, pieces: 6 });
+  const { status } = await call('POST', '/api/sales/entry', {
+    customerId: credit._id,
+    paymentMethod: 'cash',
+    items: [{ itemId: item._id, topUp: true, mrp: 175, cases: 0, pieces: 9, piecesPerCase: 10, locationTakenFrom: 'storeA', priceAtSale: 90 }],
+  });
+  assert.equal(status, 201);
+  const saved = await InventoryItem.findById(item._id);
+  assert.deepEqual([saved.quantity, saved.mrp], [0, 175]);
+});
+
+test('a failed bill leaves no new items behind', async () => {
+  const { status } = await call('POST', '/api/sales/entry', {
+    customerId: cash._id,
+    paymentMethod: 'credit',
+    items: [{ name: 'Ghost', newItem: true, topUp: true, cases: 0, pieces: 1, piecesPerCase: 1, locationTakenFrom: 'storeA', priceAtSale: 1 }],
+  });
+  assert.equal(status, 400);
+  assert.equal(await InventoryItem.countDocuments({ name: 'Ghost' }), 0);
 });
 
 test('a customer with open bills cannot be deleted', async () => {

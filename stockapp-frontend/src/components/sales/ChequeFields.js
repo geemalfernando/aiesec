@@ -1,22 +1,14 @@
 // src/components/sales/ChequeFields.js
 import React from 'react';
+import { Field, Input } from '../ui';
 
 const ChequeFields = ({ cheque, onChange }) => {
   const set = (field) => (e) => onChange({ ...cheque, [field]: e.target.value });
   return (
-    <div className="row g-2">
-      <div className="col-md-4">
-        <label className="form-label" htmlFor="chequeNumber">Cheque number *</label>
-        <input id="chequeNumber" className="form-control" value={cheque.chequeNumber} onChange={set('chequeNumber')} required />
-      </div>
-      <div className="col-md-4">
-        <label className="form-label" htmlFor="bankName">Bank *</label>
-        <input id="bankName" className="form-control" value={cheque.bankName} onChange={set('bankName')} required />
-      </div>
-      <div className="col-md-4">
-        <label className="form-label" htmlFor="chequeDate">Cheque date (deposit day) *</label>
-        <input id="chequeDate" type="date" className="form-control" value={cheque.chequeDate} onChange={set('chequeDate')} required />
-      </div>
+    <div className="grid gap-3">
+      <Field label="Cheque number"><Input value={cheque.chequeNumber} onChange={set('chequeNumber')} required /></Field>
+      <Field label="Bank"><Input value={cheque.bankName} onChange={set('bankName')} required /></Field>
+      <Field label="Cheque date" hint="The day it can be deposited"><Input type="date" value={cheque.chequeDate} onChange={set('chequeDate')} required /></Field>
     </div>
   );
 };

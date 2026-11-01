@@ -21,7 +21,13 @@ export const addCustomer = async (customerData) => {
   }
 };
 
-// You might also want:
-// export const updateCustomer = async (customerId, customerData) => { ... };
-// export const deleteCustomer = async (customerId) => { ... };
-// export const getCustomerById = async (customerId) => { ... };
+
+
+export const updateCustomer = async (customerId, customerData) => {
+  const response = await apiClient.put(`/customers/${customerId}`, customerData);
+  return response.data.data;
+};
+
+export const deleteCustomer = async (customerId) => {
+  await apiClient.delete(`/customers/${customerId}`);
+};
