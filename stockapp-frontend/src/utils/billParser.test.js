@@ -75,18 +75,18 @@ test('sub total is not the bill total', () => {
 
 // Real OCR output from a photographed bill, with its mistakes left in.
 const REAL_OCR = `| INVOICE
-MGS DISTRIBUTORS
-NO.4/1, MLE. PERERA MAWATHA, KOALAWELLA, MORATUWA
-0773834456
+ABC DISTRIBUTORS
+NO.1, MLE. PERERA ROAD, SAMPLE TOWN
+0770000000
 | CORIGINAL] DISTRIBUTOR COPY
 Bill date : 2026-10-26 —
-Serial No : 45098
-PTLIYANDALA-C
+Serial No : 10001
+RTE-A
 So eee ae
 Customer :
 SILVA STORES
-49 D
-KATUBADDA
+1 A
+SAMPLETOWN
 KU UNIT QTY RATE AMOUNT
 BOSSES ULCER EURAIL ES ELM Bly
 et (Rs) 5 281. 20
@@ -119,7 +119,7 @@ oe@f@4?¢
 0. 00
 Customer Signature il: Yd
 CBL IT POS - 2021
-printed by : PILIYANDALA-C
+printed by : RTE-A
 96-10-2026 12:01
 12. 431
 All Rights Reserved`;
@@ -144,9 +144,9 @@ describe('real photographed bill, nothing in stock yet', () => {
   });
   test('reads date, serial, customer and address', () => {
     expect(bill.billDate).toBe('2026-10-26');
-    expect(bill.billNumber).toBe('45098');
+    expect(bill.billNumber).toBe('10001');
     expect(bill.customerName).toBe('Silva Stores');
-    expect(bill.customerAddress).toBe('49 D, Katubadda');
+    expect(bill.customerAddress).toBe('1 A, Sampletown');
   });
   test('reports a free line whose name is unreadable', () => expect(bill.unread.join()).toMatch(/Name could not be read: 3 PKT \(free\)/));
   test('a second reading recovers the free line', () => {
@@ -176,7 +176,7 @@ describe('same bill with existing data', () => {
   });
   test('short stock is still a row, topped up on saving', () => expect(bill.items[5]).toMatchObject({ itemId: 'c', quantity: 4, topUp: true }));
   test('finds a customer by outlet ID when the name was misread', () => {
-    const found = parseBill('OUTLET ID : 171746\nCustomer :\nSILVA STOKES XX', [{ _id: 'o', name: 'Other Name', outletId: '171746' }], []);
+    const found = parseBill('OUTLET ID : 100001\nCustomer :\nSILVA STOKES XX', [{ _id: 'o', name: 'Other Name', outletId: '100001' }], []);
     expect(found.customer._id).toBe('o');
   });
   test('a free line is kept apart at no charge', () => {
