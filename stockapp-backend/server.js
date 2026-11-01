@@ -4,7 +4,9 @@ const cors = require('cors');
 require('dotenv').config();
 
 // Import database connection function
+const mongoose = require('mongoose');
 const connectDB = require('./config/db');
+const { startImageSync } = require('./utils/imageStore');
 
 // Import all route files
 const adminRoutes = require('./routes/adminRoutes'); // This is the new/updated admin route file
@@ -13,6 +15,9 @@ const salesRoutes = require('./routes/salesRoutes');     // NEW: Import sales ro
 const inventoryRoutes = require('./routes/inventoryRoutes'); // NEW: Import inventory routes
 const dashboardRoutes = require('./routes/dashboardRoutes'); // NEW: Import dashboard routes
 const paymentRoutes = require('./routes/paymentRoutes');
+const reportRoutes = require('./routes/reportRoutes');
+const billPhotoRoutes = require('./routes/billPhotoRoutes');
+const restockRoutes = require('./routes/restockRoutes');
 
 const app = express();
 
@@ -44,10 +49,14 @@ app.use('/api/sales', salesRoutes);     // Mount sales routes
 app.use('/api/inventory', inventoryRoutes);     // NEW: Mount inventory routes
 app.use('/api/dashboard', dashboardRoutes);     // NEW: Mount dashboard routes
 app.use('/api/payments', paymentRoutes);
+app.use('/api/reports', reportRoutes);
+app.use('/api/bill-photos', billPhotoRoutes);
+app.use('/api/restocks', restockRoutes);
 
 // --- Database Connection ---
 // Establishes connection to your MongoDB database.
 connectDB();
+mongoose.connection.once('open', () => startImageSync());
 
 // --- Global Error Handling Middleware ---
 // This MUST be the last middleware defined.

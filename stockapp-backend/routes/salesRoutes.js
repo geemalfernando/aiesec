@@ -4,6 +4,7 @@ const {
   recordSale,
   getSales,
   getSaleById,
+  saveSaleImage,
   getDueBills,     // NEW
   getOverdueBills, // NEW
 } = require('../controllers/salesController');
@@ -19,6 +20,7 @@ router.get('/overdue-bills', getOverdueBills);
 
 // Admin/manager specific routes for viewing sales history and bills
 router.get('/history', getSales); // Allow users to view sales history
+router.post('/:saleId/image', express.raw({ type: 'image/*', limit: '25mb' }), saveSaleImage);
 router.get('/:saleId', getSaleById);
 
 module.exports = router;

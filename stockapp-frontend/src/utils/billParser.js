@@ -163,6 +163,13 @@ const findCustomerBlock = (lines) => {
   return block.length ? { name: block[0], address: block.slice(1).join(', ') } : null;
 };
 
+// The company's name is the line under INVOICE, or else the first line with words.
+const findSupplierName = (lines) => {
+  const index = lines.findIndex((line) => /^\W*invoice\b/i.test(line));
+  const line = index >= 0 ? lines[index + 1] : lines.find((text) => /[a-z]{3}/i.test(text));
+  return line ? titleCase(line.replace(/^[^A-Za-z0-9]+/, '').trim()) : '';
+};
+
 const findBillDate = (text) => {
   const iso = text.match(/\bdate\s*:?\s*(\d{4})-(\d{2})-(\d{2})/i);
   if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
@@ -211,7 +218,6 @@ export const parseBill = (rawText, customers, inventory) => {
     items.push({
       itemId: stock?._id || null,
       isNew: !stock,
-      topUp: true,
       name: stock?.name || product.name,
       mrp: product.mrp ?? stock?.mrp ?? null,
       quantity: total,
@@ -281,6 +287,7 @@ export const parseBill = (rawText, customers, inventory) => {
     customerName: customerBlock ? titleCase(customerBlock.name) : '',
     customerAddress: customerBlock ? titleCase(customerBlock.address) : '',
     outletId,
+    supplierName: findSupplierName(lines),
     billDate: findBillDate(text),
     billNumber: findBillNumber(text),
     items,

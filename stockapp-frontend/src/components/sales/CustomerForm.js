@@ -42,13 +42,13 @@ const CustomerForm = ({ customer = {}, onSave, onCancel }) => {
         <Field label="Outlet ID"><Input value={values.outletId} onChange={set('outletId')} /></Field>
       </div>
       <div className="grid grid-cols-2 gap-3">
-        <Field label="Type">
+        <Field label="Usually pays by">
           <Select value={values.customerType} onChange={set('customerType')}>
             <option value="cash">Cash</option>
             <option value="credit">Credit</option>
           </Select>
         </Field>
-        {values.customerType === 'credit' && <Field label="Credit days"><Input type="number" min="0" value={values.creditDays} onChange={set('creditDays')} required /></Field>}
+        <Field label="Credit days" hint="Used when a bill is on credit"><Input type="number" min="0" value={values.creditDays} onChange={set('creditDays')} required /></Field>
       </div>
       <div className="flex justify-end gap-2">
         <Button variant="secondary" onClick={onCancel}>Cancel</Button>

@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeftRight, Boxes, Plus, Search } from 'lucide-react';
+import { ArrowLeftRight, Boxes, PackagePlus, Plus, Search } from 'lucide-react';
 import { addInventoryItem, fetchInventoryItems, fetchLocations } from '../api/inventory';
+import { fetchItemSummaries } from '../api/reports';
 import { Alert, Badge, Button, buttonClass, Card, EmptyState, Field, Input, Modal, PageHeader, PageLoading, Select, Stat, Table, Td, Th, useToast } from '../components/ui';
 import { apiError, locationName, money, plural, stockText } from '../utils/format';
 
@@ -76,6 +77,7 @@ const AddItemModal = ({ stock, locations, onClose, onAdded }) => {
 const InventoryPage = () => {
   const toast = useToast();
   const [stock, setStock] = useState(null);
+  const [items, setItems] = useState([]);
   const [locations, setLocations] = useState([]);
   const [error, setError] = useState('');
   const [search, setSearch] = useState('');
@@ -85,8 +87,9 @@ const InventoryPage = () => {
 
   const load = useCallback(async () => {
     try {
-      const [items, locs] = await Promise.all([fetchInventoryItems(), fetchLocations()]);
-      setStock(items);
+      const [records, summaries, locs] = await Promise.all([fetchInventoryItems(), fetchItemSummaries(), fetchLocations()]);
+      setStock(records);
+      setItems(summaries);
       setLocations(locs);
     } catch (err) {
       setError(apiError(err, 'Could not load stock.'));
@@ -98,18 +101,19 @@ const InventoryPage = () => {
   const shown = useMemo(() => {
     const sorters = {
       name: (a, b) => a.name.localeCompare(b.name),
+      quantity: (a, b) => a.stock - b.stock,
+      sold: (a, b) => b.sold - a.sold,
       price: (a, b) => b.price - a.price,
-      quantity: (a, b) => a.quantity - b.quantity,
-      location: (a, b) => a.location.localeCompare(b.location),
     };
-    return (stock || [])
-      .filter((s) => s.name.toLowerCase().includes(search.trim().toLowerCase()) && (!locationFilter || s.location === locationFilter))
+    return items
+      .filter((item) => item.name.toLowerCase().includes(search.trim().toLowerCase()) && (!locationFilter || item.locations.some((l) => l.location === locationFilter)))
       .sort(sorters[sortBy]);
-  }, [stock, search, locationFilter, sortBy]);
+  }, [items, search, locationFilter, sortBy]);
 
   const actions = (
     <div className="flex flex-wrap gap-2">
       <Link to="/stock/transfer" className={buttonClass('secondary')}><ArrowLeftRight className="h-4 w-4" aria-hidden="true" /> Transfer</Link>
+      <Link to="/stock/receive" className={buttonClass('secondary')}><PackagePlus className="h-4 w-4" aria-hidden="true" /> Restock</Link>
       <Button onClick={() => setAdding(true)}><Plus className="h-4 w-4" aria-hidden="true" /> Add stock</Button>
     </div>
   );
@@ -117,16 +121,16 @@ const InventoryPage = () => {
   if (!stock) return <><PageHeader title="Stock" />{error ? <Alert>{error}</Alert> : <PageLoading />}</>;
 
   const value = stock.reduce((sum, s) => sum + s.price * s.quantity, 0);
-  const low = stock.filter((s) => s.quantity > 0 && s.quantity < LOW_STOCK_PIECES).length;
-  const out = stock.filter((s) => s.quantity === 0).length;
+  const low = items.filter((item) => item.stock > 0 && item.stock < LOW_STOCK_PIECES).length;
+  const out = items.filter((item) => item.stock === 0).length;
 
   return (
     <>
-      <PageHeader title="Stock" subtitle={`${new Set(stock.map((s) => s.name)).size} items in ${plural(new Set(stock.map((s) => s.location)).size, 'location')}`} action={actions} />
+      <PageHeader title="Stock" action={actions} subtitle={`${items.length} items in ${plural(new Set(stock.map((s) => s.location)).size, 'location')}`} />
       <div className="mb-6 grid gap-3 sm:grid-cols-3">
         <Stat label="Stock value" value={money(value)} />
-        <Stat label="Low stock" value={plural(low, 'line')} tone={low ? 'warning' : 'default'} note={`Under ${LOW_STOCK_PIECES} pieces`} />
-        <Stat label="Out of stock" value={plural(out, 'line')} tone={out ? 'danger' : 'default'} />
+        <Stat label="Low stock" value={plural(low, 'item')} tone={low ? 'warning' : 'default'} note={`Under ${LOW_STOCK_PIECES} pieces`} />
+        <Stat label="Out of stock" value={plural(out, 'item')} tone={out ? 'danger' : 'default'} />
       </div>
       <div className="mb-3 grid gap-3 sm:grid-cols-3">
         <Field label="Item">
@@ -145,8 +149,8 @@ const InventoryPage = () => {
           <Select value={sortBy} onChange={(e) => setSortBy(e.target.value)}>
             <option value="name">Name</option>
             <option value="quantity">Lowest stock first</option>
+            <option value="sold">Best selling first</option>
             <option value="price">Highest price first</option>
-            <option value="location">Location</option>
           </Select>
         </Field>
       </div>
@@ -155,17 +159,18 @@ const InventoryPage = () => {
           <EmptyState icon={Boxes} title={stock.length ? 'No stock matches' : 'No stock yet'}>{stock.length ? 'Try another search.' : 'Add your first item to get started.'}</EmptyState>
         ) : (
           <Table>
-            <thead><tr><Th>Item</Th><Th>Location</Th><Th>Stock</Th><Th>Level</Th><Th align="right">MRP</Th><Th align="right">Price</Th><Th align="right">Value</Th></tr></thead>
+            <thead><tr><Th>Item</Th><Th>Where</Th><Th>In stock</Th><Th>Level</Th><Th align="right">MRP</Th><Th align="right">Price</Th><Th align="right">Sold</Th><Th align="right">Received</Th></tr></thead>
             <tbody>
-              {shown.map((s) => (
-                <tr key={s._id} className="hover:bg-slate-50">
-                  <Td className="font-medium">{s.name}</Td>
-                  <Td className="whitespace-nowrap text-slate-600">{locationName(s.location)}</Td>
-                  <Td className="tabular whitespace-nowrap">{stockText(s.cases, s.pieces)}<div className="text-xs text-slate-500">{s.quantity} pieces, {s.piecesPerCase} per case</div></Td>
-                  <Td>{s.quantity === 0 ? <Badge tone="danger">Out</Badge> : s.quantity < LOW_STOCK_PIECES ? <Badge tone="warning">Low</Badge> : <Badge tone="good">OK</Badge>}</Td>
-                  <Td align="right" className="whitespace-nowrap text-slate-600">{s.mrp ? money(s.mrp) : '-'}</Td>
-                  <Td align="right" className="whitespace-nowrap text-slate-600">{money(s.price)}</Td>
-                  <Td align="right" className="whitespace-nowrap font-medium">{money(s.price * s.quantity)}</Td>
+              {shown.map((item) => (
+                <tr key={item.name} className="hover:bg-slate-50">
+                  <Td><Link to={`/stock/items/${encodeURIComponent(item.name)}`} className="font-medium text-brand-700 hover:underline">{item.name}</Link><div className="text-xs text-slate-500">{item.piecesPerCase} per case</div></Td>
+                  <Td className="text-xs text-slate-600">{item.locations.map((l) => <div key={l._id} className="whitespace-nowrap">{locationName(l.location)}: {stockText(l.cases, l.pieces)}</div>)}</Td>
+                  <Td className="tabular whitespace-nowrap">{stockText(Math.floor(item.stock / item.piecesPerCase), item.stock % item.piecesPerCase)}<div className="text-xs text-slate-500">{item.stock} pieces</div></Td>
+                  <Td>{item.stock === 0 ? <Badge tone="danger">Out</Badge> : item.stock < LOW_STOCK_PIECES ? <Badge tone="warning">Low</Badge> : <Badge tone="good">OK</Badge>}</Td>
+                  <Td align="right" className="whitespace-nowrap text-slate-600">{item.mrp ? money(item.mrp) : '-'}</Td>
+                  <Td align="right" className="whitespace-nowrap text-slate-600">{money(item.price)}</Td>
+                  <Td align="right">{item.sold}</Td>
+                  <Td align="right">{item.received}</Td>
                 </tr>
               ))}
             </tbody>

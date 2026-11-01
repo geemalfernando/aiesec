@@ -21,3 +21,12 @@ yarn-error.log*
 # OS files
 .DS_Store
 Thumbs.db
+
+# Dependencies, build output and bill photos stay out of the repo
+node_modules/
+build/
+.env
+.DS_Store
+*.jpg
+*.jpeg
+*.heic

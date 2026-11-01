@@ -82,6 +82,10 @@ const SaleSchema = new mongoose.Schema({
     type: Date,
     // Validation for 'required' if paymentMethod is 'credit' will be in controller
   },
+  agency: { // Which agency the bill came from, when it arrived as a photo
+    type: String,
+  },
+  imagePath: { type: String },
   billNumber: { // Serial number printed on the paper bill
     type: String,
     trim: true,
