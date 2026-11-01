@@ -111,6 +111,15 @@ const Navbar = () => {
                 </li>
                 <li className="nav-item">
                   <Link 
+                    className={`nav-link ${location.pathname === '/admin/cheques' ? 'active' : ''}`} 
+                    to="/admin/cheques"
+                    onClick={closeMobileMenu}
+                  >
+                    Cheques
+                  </Link>
+                </li>
+                <li className="nav-item">
+                  <Link 
                     className={`nav-link ${location.pathname === '/admin/users' ? 'active' : ''}`} 
                     to="/admin/users"
                     onClick={closeMobileMenu}

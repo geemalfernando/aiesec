@@ -1,4 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import ChequeFields, { EMPTY_CHEQUE, chequeComplete } from '../components/sales/ChequeFields';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { parseBill } from '../utils/billParser';
+import { readBillText } from '../utils/billOcr';
 import { fetchCustomers, addCustomer as apiAddCustomer } from '../api/customers';
 import { fetchInventoryItems, fetchLocations } from '../api/inventory';
 import { recordSale } from '../api/sales';
@@ -31,12 +35,38 @@ const SalesEntryPage = () => {
   const [discountPercentage, setDiscountPercentage] = useState(0);
   const [paymentMethod, setPaymentMethod] = useState('cash');
   const [dueDate, setDueDate] = useState('');
+  const [cheque, setCheque] = useState(EMPTY_CHEQUE);
 
   // Submission state
   const [saleError, setSaleError] = useState('');
   const [saleLoading, setSaleLoading] = useState(false);
 
   const newCustomerFormRef = useRef(null);
+
+  // Bill scanning: fills the form for review; nothing is saved until Confirm Sale
+  const location = useLocation();
+  const navigate = useNavigate();
+  const pendingBill = useRef(location.state?.billFile || null);
+  const [billImageUrl, setBillImageUrl] = useState('');
+  const [scanProgress, setScanProgress] = useState(null);
+  const [scanResult, setScanResult] = useState(null);
+  const [scanError, setScanError] = useState('');
+  const [billText, setBillText] = useState('');
+
+  const selectedCustomer = customers.find(c => c._id === selectedCustomerId);
+  const creditAllowed = selectedCustomer?.customerType !== 'cash';
+
+  // A cash customer cannot buy on credit; a credit bill defaults to the customer's credit days.
+  useEffect(() => {
+    if (paymentMethod !== 'credit') return;
+    if (!creditAllowed) {
+      setPaymentMethod('cash');
+      return;
+    }
+    const due = new Date();
+    due.setDate(due.getDate() + (selectedCustomer?.creditDays ?? 21));
+    setDueDate(due.toLocaleDateString('en-CA'));
+  }, [paymentMethod, creditAllowed, selectedCustomer]);
 
   const fetchCustomersData = useCallback(async () => {
     setCustomerLoading(true);
@@ -72,13 +102,70 @@ const SalesEntryPage = () => {
     }
   };
 
+  useEffect(() => {
+    fetchCustomersData();
+    fetchInventoryData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const scanBill = useCallback(async (file) => {
+    setBillImageUrl(URL.createObjectURL(file));
+    setScanResult(null);
+    setScanError('');
+    setScanProgress(0);
+    try {
+      const text = await readBillText(file, setScanProgress);
+      const result = parseBill(text, customers, inventoryItems);
+      setBillText(text);
+      setScanResult(result);
+      setSaleItems(result.items);
+      // An unrecognised customer stays blank so the bill cannot go to the wrong account.
+      setSelectedCustomerId(result.customer?._id || '');
+      setPaymentMethod(result.payment.method || 'cash');
+      setDueDate('');
+      setCheque({ ...EMPTY_CHEQUE, chequeNumber: result.payment.chequeNumber });
+    } catch (err) {
+      console.error('Bill scan error:', err);
+      setScanError('Could not read this image. Try a clearer photo, or enter the bill manually.');
+    } finally {
+      setScanProgress(null);
+    }
+  }, [customers, inventoryItems]);
+
+  // A bill chosen on the home page is read once customers and stock have loaded.
+  useEffect(() => {
+    if (!pendingBill.current || customerLoading || inventoryLoading) return;
+    const file = pendingBill.current;
+    pendingBill.current = null;
+    navigate(location.pathname, { replace: true, state: null });
+    scanBill(file);
+  }, [customerLoading, inventoryLoading, scanBill, navigate, location.pathname]);
+
+  const handleSaleItemQuantity = (index, field, value) => {
+    const entered = Math.max(0, parseInt(value, 10) || 0);
+    const item = saleItems[index];
+    const cases = field === 'cases' ? entered : item.cases;
+    const pieces = field === 'pieces' ? entered : item.pieces;
+    const quantity = cases * item.piecesPerCase + pieces;
+    const stock = inventoryItems.find(i => i._id === item.itemId && i.location === item.locationTakenFrom);
+    if (stock && quantity > stock.quantity) {
+      setSaleError(`Insufficient stock for ${item.name}. Available: ${stock.quantity}`);
+      return;
+    }
+    setSaleError('');
+    setSaleItems(saleItems.map((row, i) => (i === index ? {
+      ...row,
+      quantity,
+      cases: Math.floor(quantity / row.piecesPerCase),
+      pieces: quantity % row.piecesPerCase,
+    } : row)));
+  };
+
   const handleAddItemToSale = () => {
     if (!selectedItemId || !selectedLocation) {
       setSaleError('Please select item and location.');
       return;
     }
-
-    const totalQuantity = currentCases * (itemAtSelectedLocation?.piecesPerCase || 0) + currentPieces;
 
     const selectedItem = inventoryItems.find(item => item._id === selectedItemId);
     if (!selectedItem) {
@@ -89,6 +176,7 @@ const SalesEntryPage = () => {
     const itemAtSelectedLocation = inventoryItems.find(
       i => i._id === selectedItemId && i.location === selectedLocation
     );
+    const totalQuantity = currentCases * (itemAtSelectedLocation?.piecesPerCase || 0) + currentPieces;
 
     if (!itemAtSelectedLocation) {
       setSaleError(`Item "${selectedItem.name}" not available at "${selectedLocation}".`);
@@ -176,8 +264,16 @@ const SalesEntryPage = () => {
       setSaleError('Please add items to the sale.');
       return;
     }
+    if (saleItems.some(item => item.quantity < 1)) {
+      setSaleError('Every item needs at least 1 piece. Remove any item you do not want.');
+      return;
+    }
     if (paymentMethod === 'credit' && !dueDate) {
       setSaleError('Please enter a due date for credit sales.');
+      return;
+    }
+    if (paymentMethod === 'cheque' && !chequeComplete(cheque)) {
+      setSaleError('Please enter the cheque number, bank and cheque date.');
       return;
     }
 
@@ -200,6 +296,7 @@ const SalesEntryPage = () => {
       discountPercentage,
       paymentMethod,
       ...(paymentMethod === 'credit' && dueDate && { dueDate }),
+      ...(paymentMethod === 'cheque' && { cheque }),
     };
 
     try {
@@ -213,6 +310,10 @@ const SalesEntryPage = () => {
       setDiscountPercentage(0);
       setPaymentMethod('cash');
       setDueDate('');
+      setCheque(EMPTY_CHEQUE);
+      setScanResult(null);
+      setBillImageUrl('');
+      setBillText('');
       
       // Refresh data
       await fetchCustomersData();
@@ -268,6 +369,72 @@ const SalesEntryPage = () => {
 
       <div className="max-w-7xl mx-auto py-6 sm:px-6 lg:px-8">
         <div className="px-4 py-6 sm:px-0">
+          {/* Bill Image */}
+          <section className="card mb-4" aria-label="Bill image">
+            <div className="card-body">
+              <div className="d-flex flex-wrap justify-content-between align-items-center gap-2">
+                <h2 className="h5 mb-0">Bill image</h2>
+                <label className={`btn btn-sm btn-primary mb-0 ${scanProgress !== null ? 'disabled' : ''}`}>
+                  {billImageUrl ? 'Use another image' : 'Add bill image'}
+                  <input
+                    type="file"
+                    accept="image/*"
+                    className="d-none"
+                    aria-label="Choose bill image"
+                    disabled={scanProgress !== null}
+                    onChange={(e) => {
+                      if (e.target.files[0]) scanBill(e.target.files[0]);
+                      e.target.value = '';
+                    }}
+                  />
+                </label>
+              </div>
+              {!billImageUrl && <p className="text-muted mt-2 mb-0">Optional. You can also fill in the form below by hand.</p>}
+              {scanProgress !== null && <div className="alert alert-info mt-3 mb-0" role="status">Reading the bill... {scanProgress}%</div>}
+              {scanError && <div className="alert alert-danger mt-3 mb-0">{scanError}</div>}
+              {billImageUrl && (
+                <div className="row g-3 mt-1">
+                  <div className="col-md-4">
+                    <a href={billImageUrl} target="_blank" rel="noreferrer">
+                      <img src={billImageUrl} alt="The bill you added" className="img-fluid border rounded" />
+                    </a>
+                  </div>
+                  {scanResult && (
+                    <div className="col-md-8">
+                      <div className="alert alert-warning">
+                        <strong>Check this against the bill.</strong> Change anything below, then choose cash, cheque or credit. Nothing is saved until you press Confirm Sale.
+                      </div>
+                      <ul className="mb-2">
+                        <li>Customer: {scanResult.customer ? scanResult.customer.name : <strong>not recognised, please select one</strong>}</li>
+                        <li>Items filled in: {scanResult.items.length}</li>
+                        <li>Payment: {scanResult.payment.method || <strong>not clear from the bill, please choose</strong>}</li>
+                        {scanResult.billTotal !== null && (
+                          <li>
+                            Total on the bill: {scanResult.billTotal.toFixed(2)}
+                            {Math.abs(scanResult.billTotal - totalAfterDiscount) >= 0.01 && (
+                              <strong> (the form total is {totalAfterDiscount.toFixed(2)}, please check)</strong>
+                            )}
+                          </li>
+                        )}
+                        {scanResult.notes.map(note => <li key={note}>{note}</li>)}
+                      </ul>
+                      {scanResult.unread.length > 0 && (
+                        <>
+                          <p className="mb-1"><strong>Lines not matched to your stock:</strong></p>
+                          <ul className="mb-2">{scanResult.unread.map(line => <li key={line}>{line}</li>)}</ul>
+                        </>
+                      )}
+                      <details>
+                        <summary>Text read from the image</summary>
+                        <pre className="small mb-0 mt-2" style={{ whiteSpace: 'pre-wrap' }}>{billText}</pre>
+                      </details>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </section>
+
           {/* Error Message */}
           {(saleError || customerError) && (
             <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-6">
@@ -298,7 +465,7 @@ const SalesEntryPage = () => {
               </select>
               <button
                 onClick={() => setShowAddCustomerForm(!showAddCustomerForm)}
-                className="px-6 py-3 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white rounded-lg text-sm font-semibold shadow-md hover:shadow-lg transition-all duration-200"
+                className="btn btn-primary px-6 py-3 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white rounded-lg text-sm font-semibold shadow-md hover:shadow-lg transition-all duration-200"
               >
                 {showAddCustomerForm ? '✕ Cancel' : '+ New Customer'}
               </button>
@@ -315,11 +482,12 @@ const SalesEntryPage = () => {
                     const name = form.elements.customerName.value;
                     const email = form.elements.customerEmail.value;
                     const phone = form.elements.customerPhone.value;
+                    const customerType = form.elements.customerType.value;
                     if (!name) {
                       alert('Customer name is required.');
                       return;
                     }
-                    apiAddCustomer({ name, email, phone })
+                    apiAddCustomer({ name, email, phone, customerType })
                       .then(handleCustomerAdded)
                       .catch(err => {
                         console.error('Error adding customer:', err);
@@ -348,6 +516,15 @@ const SalesEntryPage = () => {
                     placeholder="Phone (optional)"
                     className="p-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
                   />
+                  <select
+                    name="customerType"
+                    aria-label="Customer type"
+                    defaultValue="cash"
+                    className="p-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
+                  >
+                    <option value="cash">Cash customer</option>
+                    <option value="credit">Credit customer (21 days)</option>
+                  </select>
                   <div className="md:col-span-3 flex justify-end pt-2">
                     <button
                       type="submit"
@@ -438,7 +615,7 @@ const SalesEntryPage = () => {
               <button
                 onClick={handleAddItemToSale}
                 disabled={!selectedItemId || !selectedLocation}
-                className="px-6 py-3 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white rounded-lg text-sm font-semibold shadow-md hover:shadow-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="btn btn-primary px-6 py-3 bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white rounded-lg text-sm font-semibold shadow-md hover:shadow-lg transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 + Add Item
               </button>
@@ -474,6 +651,24 @@ const SalesEntryPage = () => {
                         <td className="px-6 py-4 whitespace-nowrap">
                           <div className="px-3 py-1 bg-blue-100 text-blue-800 rounded-full text-sm font-bold inline-block">
                             {item.cases} cases, {item.pieces} pieces
+                          </div>
+                          <div className="d-flex gap-2 mt-1" style={{ maxWidth: 220 }}>
+                            <input
+                              type="number"
+                              min="0"
+                              className="form-control form-control-sm"
+                              aria-label={`Cases of ${item.name}`}
+                              value={item.cases}
+                              onChange={(e) => handleSaleItemQuantity(index, 'cases', e.target.value)}
+                            />
+                            <input
+                              type="number"
+                              min="0"
+                              className="form-control form-control-sm"
+                              aria-label={`Pieces of ${item.name}`}
+                              value={item.pieces}
+                              onChange={(e) => handleSaleItemQuantity(index, 'pieces', e.target.value)}
+                            />
                           </div>
                           <div className="text-xs text-gray-500 mt-1">{item.quantity} total pieces</div>
                         </td>
@@ -546,10 +741,17 @@ const SalesEntryPage = () => {
                   className="w-full p-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors"
                 >
                   <option value="cash">Cash</option>
-                  <option value="credit">Credit</option>
+                  <option value="cheque">Cheque</option>
+                  <option value="credit" disabled={!creditAllowed}>Credit{creditAllowed ? '' : ' (cash customer)'}</option>
                 </select>
               </div>
             </div>
+
+            {paymentMethod === 'cheque' && (
+              <div className="mt-6 p-4 bg-yellow-50 rounded-lg border-2 border-yellow-200">
+                <ChequeFields cheque={cheque} onChange={setCheque} />
+              </div>
+            )}
 
             {paymentMethod === 'credit' && (
               <div className="mt-6 p-4 bg-yellow-50 rounded-lg border-2 border-yellow-200">
@@ -582,8 +784,8 @@ const SalesEntryPage = () => {
               </div>
               <button
                 onClick={handleSubmitSale}
-                disabled={saleLoading || !selectedCustomerId || saleItems.length === 0 || (paymentMethod === 'credit' && !dueDate)}
-                className="px-10 py-4 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white rounded-xl text-lg font-bold shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200"
+                disabled={saleLoading || !selectedCustomerId || saleItems.length === 0 || (paymentMethod === 'credit' && !dueDate) || (paymentMethod === 'cheque' && !chequeComplete(cheque))}
+                className="btn btn-success px-10 py-4 bg-gradient-to-r from-green-600 to-green-700 hover:from-green-700 hover:to-green-800 text-white rounded-xl text-lg font-bold shadow-lg hover:shadow-xl disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200"
               >
                 {saleLoading ? '⏳ Processing...' : '✓ Confirm Sale'}
               </button>

@@ -2,6 +2,10 @@
 const Sale = require('../models/Sale');
 const Customer = require('../models/Customer');
 const InventoryItem = require('../models/InventoryItem');
+const Payment = require('../models/Payment');
+const { chequeFields } = require('./paymentController');
+const { today, addDays, parseDay } = require('../utils/businessDate');
+const { OPEN_BILL_MATCH, BALANCE_EXPR, refreshStatus } = require('../utils/billing');
 const mongoose = require('mongoose');
 
 exports.recordSale = async (req, res, next) => {
@@ -9,24 +13,24 @@ exports.recordSale = async (req, res, next) => {
   session.startTransaction();
 
   try {
-    const { customerId, items, discountAmount, discountPercentage, paymentMethod, dueDate } = req.body;
+    const { customerId, items, discountAmount, discountPercentage, paymentMethod, dueDate, cheque } = req.body;
 
     // --- Input Validation ---
     if (!customerId || !items || !Array.isArray(items) || items.length === 0 || !paymentMethod) {
       const error = new Error('Missing required fields: customer, items, or payment method.');
       error.statusCode = 400; throw error;
     }
-    // Conditional validation for dueDate
-    if (paymentMethod === 'credit' && !dueDate) {
-        const error = new Error('Due date is required for credit payment method.');
-        error.statusCode = 400; throw error;
-    }
+    const chequeData = paymentMethod === 'cheque' ? chequeFields(cheque || {}) : null;
 
     // --- Customer Validation ---
     const customer = await Customer.findById(customerId).session(session);
     if (!customer) {
       const error = new Error(`Customer with ID ${customerId} not found.`);
       error.statusCode = 404; throw error;
+    }
+    if (paymentMethod === 'credit' && customer.customerType === 'cash') {
+      const error = new Error(`${customer.name} is a cash customer and cannot buy on credit.`);
+      error.statusCode = 400; throw error;
     }
 
     // --- Item Validation and Price Calculation ---
@@ -103,6 +107,9 @@ exports.recordSale = async (req, res, next) => {
     await Promise.all(updateStockPromises);
 
     // --- Create the sale record ---
+    const billDueDate = paymentMethod === 'credit'
+      ? (dueDate ? parseDay(dueDate) : addDays(today(), customer.creditDays))
+      : chequeData?.chequeDate; // If a sale's cheque bounces, the bill is already due
     const newSale = await Sale.create([{
       customer: customerId,
       items: saleItemsData,
@@ -110,9 +117,30 @@ exports.recordSale = async (req, res, next) => {
       discountAmount: discountAmount || 0,
       discountPercentage: discountPercentage || 0,
       paymentMethod: paymentMethod,
-      dueDate: paymentMethod === 'credit' ? dueDate : undefined, // Only add dueDate if credit
+      dueDate: billDueDate,
+      amountPaid: paymentMethod === 'cash' ? finalTotal : 0,
+      pendingChequeAmount: paymentMethod === 'cheque' ? finalTotal : 0,
+      balanceDue: paymentMethod === 'credit' ? finalTotal : 0,
       // salesPerson: req.user.id,
     }], { session: session });
+
+    refreshStatus(newSale[0]);
+    await newSale[0].save({ session });
+
+    if (chequeData) {
+      if (!(finalTotal > 0)) {
+        const error = new Error('A cheque sale must have an amount above zero.');
+        error.statusCode = 400; throw error;
+      }
+      await Payment.create([{
+        customer: customerId,
+        method: 'cheque',
+        amount: finalTotal,
+        allocations: [{ sale: newSale[0]._id, amount: finalTotal }],
+        recordedBy: req.user._id,
+        ...chequeData,
+      }], { session });
+    }
 
     await session.commitTransaction();
     session.endSession();
@@ -121,7 +149,7 @@ exports.recordSale = async (req, res, next) => {
   } catch (error) {
     await session.abortTransaction();
     session.endSession();
-    next(error);
+    next(error.code === 11000 ? Object.assign(new Error('This cheque number is already recorded for this bank.'), { statusCode: 409 }) : error);
   }
 };
 
@@ -163,6 +191,10 @@ exports.getSales = async (req, res, next) => {
       totalAmount: sale.totalAmount,
       paymentMethod: sale.paymentMethod,
       dueDate: sale.dueDate,
+      amountPaid: sale.amountPaid,
+      pendingChequeAmount: sale.pendingChequeAmount,
+      balanceDue: sale.balanceDue ?? (sale.paymentMethod === 'credit' ? sale.totalAmount : 0),
+      paymentStatus: sale.paymentStatus,
       saleDate: sale.createdAt,
       createdAt: sale.createdAt,
       updatedAt: sale.updatedAt
@@ -197,17 +229,17 @@ exports.getSaleById = async (req, res, next) => {
 // Get list of due bills (for user dashboard or admin)
 exports.getDueBills = async (req, res, next) => {
     try {
-        const now = new Date();
-        now.setHours(0, 0, 0, 0); // Start of day for comparison
+        const now = today();
 
         const dueBills = await Sale.aggregate([
-            { $match: { paymentMethod: 'credit', dueDate: { $gte: now } } }, // Due today or in the future
+            { $match: { ...OPEN_BILL_MATCH, dueDate: { $gte: now } } }, // Due today or in the future
             { $lookup: { from: 'customers', localField: 'customer', foreignField: '_id', as: 'customerInfo' } },
             { $unwind: '$customerInfo' },
             { $project: { // Select only needed fields
                 _id: 1, 
                 customerId: '$customer',
                 totalAmount: 1, 
+                balanceDue: BALANCE_EXPR,
                 dueDate: 1, 
                 createdAt: 1,
                 customerName: '$customerInfo.name'
@@ -224,17 +256,17 @@ exports.getDueBills = async (req, res, next) => {
 // Get list of overdue credit bills
 exports.getOverdueBills = async (req, res, next) => {
     try {
-        const now = new Date();
-        now.setHours(0, 0, 0, 0); // Start of day for comparison
+        const now = today();
 
         const overdueBills = await Sale.aggregate([
-            { $match: { paymentMethod: 'credit', dueDate: { $lt: now } } }, // Due before today
+            { $match: { ...OPEN_BILL_MATCH, dueDate: { $lt: now } } }, // Due before today
             { $lookup: { from: 'customers', localField: 'customer', foreignField: '_id', as: 'customerInfo' } },
             { $unwind: '$customerInfo' },
             { $project: {
                 _id: 1, 
                 customerId: '$customer',
                 totalAmount: 1, 
+                balanceDue: BALANCE_EXPR,
                 dueDate: 1, 
                 createdAt: 1,
                 customerName: '$customerInfo.name'

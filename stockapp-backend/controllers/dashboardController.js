@@ -3,6 +3,7 @@ const Sale = require('../models/Sale');
 const Customer = require('../models/Customer');
 const InventoryItem = require('../models/InventoryItem');
 const mongoose = require('mongoose');
+const { OPEN_BILL_MATCH, BALANCE_EXPR } = require('../utils/billing');
 
 exports.getSalesData = async (req, res, next) => {
     try {
@@ -33,13 +34,13 @@ exports.getSalesData = async (req, res, next) => {
 
         // Credit Customers Summary
         const creditCustomersSummary = await Sale.aggregate([
-            { $match: { paymentMethod: 'credit', dueDate: { $gte: new Date() } } },
+            { $match: { ...OPEN_BILL_MATCH, dueDate: { $gte: new Date() } } },
             { $lookup: { from: 'customers', localField: 'customer', foreignField: '_id', as: 'customerInfo' } },
             { $unwind: '$customerInfo' },
             { $group: {
                 _id: '$customerInfo._id',
                 customerName: { $first: '$customerInfo.name' },
-                totalAmountOwed: { $sum: '$totalAmount' },
+                totalAmountOwed: { $sum: BALANCE_EXPR },
                 latestDueDate: { $max: '$dueDate' },
                 billCount: { $sum: 1 }
             }},
@@ -65,13 +66,13 @@ exports.getSalesData = async (req, res, next) => {
 exports.getCreditCustomersSummary = async (req, res, next) => {
     try {
         const creditCustomersSummary = await Sale.aggregate([
-            { $match: { paymentMethod: 'credit' } }, // All credit sales
+            { $match: OPEN_BILL_MATCH }, // All bills still owed
             { $lookup: { from: 'customers', localField: 'customer', foreignField: '_id', as: 'customerInfo' } },
             { $unwind: '$customerInfo' },
             { $group: {
                 _id: '$customerInfo._id',
                 customerName: { $first: '$customerInfo.name' },
-                totalAmountOwed: { $sum: '$totalAmount' },
+                totalAmountOwed: { $sum: BALANCE_EXPR },
                 latestDueDate: { $max: '$dueDate' },
                 billCount: { $sum: 1 }
             }},
@@ -94,7 +95,7 @@ exports.getDueAndOverdueBills = async (req, res, next) => {
 
         // Get due bills (not yet overdue)
         const dueBills = await Sale.aggregate([
-            { $match: { paymentMethod: 'credit', dueDate: { $gte: now } } },
+            { $match: { ...OPEN_BILL_MATCH, dueDate: { $gte: now } } },
             { $lookup: { from: 'customers', localField: 'customer', foreignField: '_id', as: 'customerInfo' } },
             { $unwind: '$customerInfo' },
             { $project: {
@@ -102,6 +103,7 @@ exports.getDueAndOverdueBills = async (req, res, next) => {
                 customerId: '$customer',
                 customerName: '$customerInfo.name',
                 totalAmount: 1,
+                balanceDue: BALANCE_EXPR,
                 dueDate: 1,
                 createdAt: 1
             }},
@@ -110,7 +112,7 @@ exports.getDueAndOverdueBills = async (req, res, next) => {
 
         // Get overdue bills
         const overdueBills = await Sale.aggregate([
-            { $match: { paymentMethod: 'credit', dueDate: { $lt: now } } },
+            { $match: { ...OPEN_BILL_MATCH, dueDate: { $lt: now } } },
             { $lookup: { from: 'customers', localField: 'customer', foreignField: '_id', as: 'customerInfo' } },
             { $unwind: '$customerInfo' },
             { $project: {
@@ -118,6 +120,7 @@ exports.getDueAndOverdueBills = async (req, res, next) => {
                 customerId: '$customer',
                 customerName: '$customerInfo.name',
                 totalAmount: 1,
+                balanceDue: BALANCE_EXPR,
                 dueDate: 1,
                 createdAt: 1
             }},

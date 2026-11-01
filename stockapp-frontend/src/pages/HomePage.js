@@ -1,9 +1,16 @@
-import React from 'react';
-import { Link } from 'react-router-dom';
+import React, { useRef } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 
 const HomePage = () => {
   const { currentUser } = useAuth();
+  const navigate = useNavigate();
+  const fileInput = useRef(null);
+
+  const handleBillChosen = (e) => {
+    const file = e.target.files[0];
+    if (file) navigate('/admin/sales-entry', { state: { billFile: file } });
+  };
 
   return (
     <div className="text-center mt-20">
@@ -29,9 +36,35 @@ const HomePage = () => {
           </Link>
         </div>
       ) : (
-        <p className="text-lg text-gray-700">
-          You are logged in. Go to your <Link to="/dashboard" className="text-indigo-600 hover:underline">Dashboard</Link>.
-        </p>
+        <>
+          {currentUser.role === 'admin' && (
+            <section className="card mx-auto my-4" style={{ maxWidth: 560 }} aria-label="Enter a bill">
+              <div className="card-body">
+                <h2 className="h4 card-title">Enter a bill</h2>
+                <p className="card-text text-muted">
+                  Add a photo and the details fill in for you to check, or type everything yourself.
+                </p>
+                <input
+                  ref={fileInput}
+                  type="file"
+                  accept="image/*"
+                  className="d-none"
+                  aria-label="Bill image"
+                  onChange={handleBillChosen}
+                />
+                <div className="d-flex flex-wrap justify-content-center gap-2">
+                  <button type="button" className="btn btn-primary" onClick={() => fileInput.current.click()}>
+                    Add bill image
+                  </button>
+                  <Link to="/admin/sales-entry" className="btn btn-outline-secondary">Enter manually</Link>
+                </div>
+              </div>
+            </section>
+          )}
+          <p className="text-lg text-gray-700">
+            You are logged in. Go to your <Link to="/dashboard" className="text-indigo-600 hover:underline">Dashboard</Link>.
+          </p>
+        </>
       )}
     </div>
   );

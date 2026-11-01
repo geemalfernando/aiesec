@@ -14,6 +14,7 @@ const customerRoutes = require('./routes/customerRoutes'); // NEW: Import custom
 const salesRoutes = require('./routes/salesRoutes');     // NEW: Import sales routes
 const inventoryRoutes = require('./routes/inventoryRoutes'); // NEW: Import inventory routes
 const dashboardRoutes = require('./routes/dashboardRoutes'); // NEW: Import dashboard routes
+const paymentRoutes = require('./routes/paymentRoutes');
 
 const app = express();
 
@@ -45,6 +46,7 @@ app.use('/api/customers', customerRoutes); // Mount customer routes
 app.use('/api/sales', salesRoutes);     // Mount sales routes
 app.use('/api/inventory', inventoryRoutes);     // NEW: Mount inventory routes
 app.use('/api/dashboard', dashboardRoutes);     // NEW: Mount dashboard routes
+app.use('/api/payments', paymentRoutes);
 
 // --- Database Connection ---
 // Establishes connection to your MongoDB database.

@@ -71,12 +71,30 @@ const SaleSchema = new mongoose.Schema({
   },
   paymentMethod: {
     type: String,
-    enum: ['cash', 'credit'],
+    enum: ['cash', 'credit', 'cheque'],
     required: true,
   },
   dueDate: { // NEW FIELD: Due date for credit sales
     type: Date,
     // Validation for 'required' if paymentMethod is 'credit' will be in controller
+  },
+  amountPaid: { // Cash received plus cheques that have cleared
+    type: Number,
+    default: 0,
+    min: 0,
+  },
+  pendingChequeAmount: { // Cheques received but not yet cleared
+    type: Number,
+    default: 0,
+    min: 0,
+  },
+  balanceDue: { // Still to collect from the customer
+    type: Number,
+    min: 0,
+  },
+  paymentStatus: {
+    type: String,
+    enum: ['unpaid', 'partial', 'cheque_pending', 'paid'],
   },
   // salesPerson: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // Optional
 }, {

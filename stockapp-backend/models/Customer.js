@@ -24,6 +24,15 @@ const CustomerSchema = new mongoose.Schema({
     trim: true,
     // Add regex validation for phone numbers if needed
   },
+  customerType: { // Unset on customers created before types existed; those are not restricted
+    type: String,
+    enum: ['cash', 'credit'],
+  },
+  creditDays: { // Days allowed to collect a credit bill
+    type: Number,
+    default: 21,
+    min: 0,
+  },
 }, {
   timestamps: true
 });

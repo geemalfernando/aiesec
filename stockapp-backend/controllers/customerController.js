@@ -1,5 +1,8 @@
 // controllers/customerController.js
 const Customer = require('../models/Customer');
+const Sale = require('../models/Sale');
+const Payment = require('../models/Payment');
+const { OPEN_BILL_MATCH } = require('../utils/billing');
 
 exports.getCustomers = async (req, res, next) => {
   try {
@@ -17,7 +20,7 @@ exports.getCustomers = async (req, res, next) => {
 
 exports.addCustomer = async (req, res, next) => {
   try {
-    let { name, email, phone } = req.body;
+    let { name, email, phone, customerType = 'cash', creditDays } = req.body;
 
     if (!name) {
       const error = new Error('Customer name is required.');
@@ -39,7 +42,7 @@ exports.addCustomer = async (req, res, next) => {
       }
     }
 
-    const newCustomer = await Customer.create({ name, email, phone });
+    const newCustomer = await Customer.create({ name, email, phone, customerType, creditDays });
     res.status(201).json({
       success: true,
       data: newCustomer,
@@ -70,7 +73,7 @@ exports.getCustomerById = async (req, res, next) => {
 exports.updateCustomer = async (req, res, next) => {
   try {
     const { customerId } = req.params;
-    let { name, email, phone } = req.body;
+    let { name, email, phone, customerType, creditDays } = req.body;
 
     if (!name) {
       const error = new Error('Customer name is required.');
@@ -94,6 +97,8 @@ exports.updateCustomer = async (req, res, next) => {
     const updateData = { name };
     if (email !== undefined) updateData.email = email;
     if (phone !== undefined) updateData.phone = phone;
+    if (customerType !== undefined) updateData.customerType = customerType;
+    if (creditDays !== undefined) updateData.creditDays = creditDays;
 
     const updatedCustomer = await Customer.findByIdAndUpdate(customerId, updateData, {
       new: true,
@@ -118,7 +123,13 @@ exports.updateCustomer = async (req, res, next) => {
 exports.deleteCustomer = async (req, res, next) => {
   try {
     const { customerId } = req.params;
-    // Optional: Add checks for existing sales before deleting customer.
+    const openBills = await Sale.countDocuments({ ...OPEN_BILL_MATCH, customer: customerId });
+    const openCheques = await Payment.countDocuments({ customer: customerId, chequeStatus: { $in: ['pending', 'deposited'] } });
+    if (openBills > 0 || openCheques > 0) {
+      const error = new Error('This customer has open bills or cheques and cannot be deleted.');
+      error.statusCode = 409;
+      return next(error);
+    }
 
     const deletedCustomer = await Customer.findByIdAndDelete(customerId);
 

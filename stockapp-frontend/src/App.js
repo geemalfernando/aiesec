@@ -21,6 +21,7 @@ import StockTransferPage from './pages/StockTransferPage';
 import SalesEntryPage from './pages/SalesEntryPage';
 import SalesHistoryPage from './pages/SalesHistoryPage';
 import CreditBillsPage from './pages/CreditBillsPage';
+import ChequeTrackerPage from './pages/ChequeTrackerPage';
 import UserManagementPage from './pages/UserManagementPage';
 
 // Import Error/Access pages.
@@ -116,6 +117,14 @@ function App() {
             element={
               <ProtectedRoute adminOnly={true}>
                 <CreditBillsPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin/cheques"
+            element={
+              <ProtectedRoute adminOnly={true}>
+                <ChequeTrackerPage />
               </ProtectedRoute>
             }
           />
