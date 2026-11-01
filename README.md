@@ -135,3 +135,7 @@ Backend tests use a temporary in-memory database and a temporary image folder, s
 - Bill reading is built for one printed invoice layout. Handwritten bills need entering by hand.
 - Forecasts need about 8 weeks of sales to be useful, and do not yet account for seasons or for orders on the way.
 - Transfers and count corrections change stock but do not appear in an item's history.
+
+## License
+
+Proprietary, all rights reserved. See [LICENSE](LICENSE).

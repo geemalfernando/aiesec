@@ -8,7 +8,7 @@
     "dev": "nodemon server.js"
   },
   "author": "",
-  "license": "ISC",
+  "license": "UNLICENSED",
   "dependencies": {
     "body-parser": "^2.2.0",
     "cors": "^2.8.5",
